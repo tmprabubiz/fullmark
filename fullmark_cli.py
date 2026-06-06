@@ -134,6 +134,67 @@ def main(
         os.environ["SKIP_EXISTING"] = "true"
 
     from fullmark.orchestrator import Orchestrator
+
+
+def _prompt_follow_links(
+    source: str,
+    orchestrator,
+    crawl_depth: int,
+    crawl_delay: float,
+    max_pages: int,
+) -> None:
+    """Interactive prompt for URL sources when --follow-links is not set.
+
+    Asks whether to crawl, estimates job size, warns about large jobs,
+    and routes accordingly.
+    """
+    import click
+
+    click.echo(f"\nSource: {source}")
+    click.echo("This is a single-page conversion (no link following).")
+    if click.confirm("Follow links on this page and convert multiple pages?", default=False):
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+            from urllib.parse import urljoin, urlparse
+            from fullmark.utils.crawler import LinkCrawler
+
+            resp = requests.get(source, timeout=10, headers={"User-Agent": "FullMark/1.0"})
+            soup = BeautifulSoup(resp.text, "lxml")
+            domain = urlparse(source).netloc
+            links = {
+                urljoin(source, a["href"])
+                for a in soup.find_all("a", href=True)
+                if urlparse(urljoin(source, a["href"])).netloc == domain
+            }
+            est_pages = min(len(links) + 1, max_pages)
+            est_minutes = est_pages * crawl_delay / 60
+            click.echo(f"\nEstimated pages : ~{est_pages} (capped at --max-pages {max_pages})")
+            click.echo(f"Estimated time  : ~{est_minutes:.1f} min at {crawl_delay}s delay")
+            if est_pages >= 20:
+                click.echo(
+                    "\n\u26a0  Large crawl detected. Consider running overnight to avoid\n"
+                    "   token-rate limits. Use --crawl-delay 5 or higher. "
+                    "Add --skip-existing to resume if interrupted."
+                )
+            if not click.confirm("Proceed with crawl?", default=True):
+                click.echo("Cancelled \u2014 running single-page conversion instead.")
+                orchestrator.convert(source)
+                return
+
+            crawler = LinkCrawler(
+                source, depth=crawl_depth, delay=crawl_delay, max_pages=max_pages
+            )
+            for url, _md in crawler.crawl():
+                click.echo(f"  converted: {url}")
+        except Exception as exc:
+            click.echo(f"Crawl setup error: {exc} \u2014 falling back to single-page.")
+            orchestrator.convert(source)
+    else:
+        if source.startswith(("http://", "https://")) and not follow_links:
+            _prompt_follow_links(source, orchestrator, crawl_depth, crawl_delay, max_pages)
+        else:
+            orchestrator.convert(source)
     from fullmark import AgentError
 
     try:

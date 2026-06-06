@@ -179,8 +179,21 @@ class Orchestrator:
             from fullmark.agents.document_agent import DocumentAgent
             return DocumentAgent().convert(source)
         if agent_name == "web":
-            from fullmark.agents.web_agent import WebAgent
-            return WebAgent().convert(source)
+            # Pre-create a per-source image directory so companion images land
+            # alongside the output .md rather than loose in output/
+            img_stem = safe_output_path(str(source), self.output_dir).stem
+            img_dir = self.output_dir / img_stem
+            img_dir.mkdir(parents=True, exist_ok=True)
+            _prev_img_dir = os.environ.get("FULLMARK_IMAGE_DIR")
+            os.environ["FULLMARK_IMAGE_DIR"] = str(img_dir)
+            try:
+                from fullmark.agents.web_agent import WebAgent
+                return WebAgent().convert(source)
+            finally:
+                if _prev_img_dir is None:
+                    os.environ.pop("FULLMARK_IMAGE_DIR", None)
+                else:
+                    os.environ["FULLMARK_IMAGE_DIR"] = _prev_img_dir
         if agent_name == "image":
             from fullmark.agents.image_agent import ImageAgent
             return ImageAgent().convert(source)
@@ -213,15 +226,23 @@ class Orchestrator:
         stem = base_path.stem
         chunks = self._split_markdown(markdown)
 
+        # Multi-segment outputs and web conversions (which have companion images)
+        # go into a dedicated subfolder: output/<stem>/
+        use_subfolder = len(chunks) > 1 or agent_name == "web"
+        out_dir = (self.output_dir / stem) if use_subfolder else self.output_dir
+        if use_subfolder:
+            out_dir.mkdir(parents=True, exist_ok=True)
+
         if len(chunks) == 1:
-            base_path.write_text(chunks[0], encoding="utf-8")
+            out_path = out_dir / base_path.name
+            out_path.write_text(chunks[0], encoding="utf-8")
             kb = len(chunks[0].encode()) / 1024
-            logger.info("wrote %s (%.1f KB)", base_path, kb)
-            written = [base_path]
+            logger.info("wrote %s (%.1f KB)", out_path, kb)
+            written = [out_path]
         else:
             written = []
             for i, chunk in enumerate(chunks, start=1):
-                seg_path = self.output_dir / f"{stem}_{i:03d}.md"
+                seg_path = out_dir / f"{stem}_{i:03d}.md"
                 seg_path.write_text(chunk, encoding="utf-8")
                 kb = len(chunk.encode()) / 1024
                 logger.info("wrote %s (%.1f KB)", seg_path, kb)
@@ -256,15 +277,21 @@ class Orchestrator:
         current: list[str] = []
         current_len = 0
 
+        fence_open = False
         for para in paragraphs:
             para_len = len(para) + 2  # account for the \n\n we'll rejoin with
-            if current and current_len + para_len > max_chars:
+            # Only split at paragraph boundaries that are outside code fences
+            can_split = not fence_open
+            if current and current_len + para_len > max_chars and can_split:
                 chunks.append("\n\n".join(current))
                 current = [para]
                 current_len = para_len
             else:
                 current.append(para)
                 current_len += para_len
+            # Update fence state: odd number of ``` in this paragraph toggles state
+            if para.count("```") % 2 == 1:
+                fence_open = not fence_open
 
         if current:
             chunks.append("\n\n".join(current))

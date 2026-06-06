@@ -118,25 +118,44 @@ class WebAgent:
             tag.decompose()
 
         # Handle images — download if AUTO_DOWNLOAD_IMAGES and base_url is http
+        image_contents: dict[str, str] = {}
         if os.getenv("AUTO_DOWNLOAD_IMAGES", "true").lower() == "true" and base_url.startswith("http"):
-            self._collect_images(soup, base_url)
+            image_contents = self._collect_images(soup, base_url)
 
         # Convert to Markdown
         content = str(soup)
         markdown = md(content, heading_style="ATX", bullets="-", strip=["a"])
-        return clean_text(markdown)
+        markdown = clean_text(markdown)
 
-    def _collect_images(self, soup, base_url: str) -> None:
-        """Download <img> tags and rename sequentially; update src attribute."""
+        # Replace image file references with content extracted by ImageAgent
+        if image_contents:
+            import re as _re
+            for filename, img_md in image_contents.items():
+                if img_md:
+                    # Strip YAML front matter from ImageAgent output
+                    body = img_md.split("---\n\n", 1)[-1].strip()
+                    if body:
+                        markdown = _re.sub(
+                            r'!\[[^\]]*\]\(' + _re.escape(filename) + r'\)',
+                            f"\n\n{body}\n\n",
+                            markdown,
+                        )
+
+        return markdown
+
+    def _collect_images(self, soup, base_url: str) -> dict[str, str]:
+        """Download <img> tags, run ImageAgent on each; return {filename: md_content}."""
         try:
             import requests  # type: ignore
         except ImportError:
-            return
+            return {}
 
-        output_dir = Path(os.getenv("OUTPUT_DIR", "./output"))
+        # Prefer the per-conversion image dir set by the orchestrator
+        output_dir = Path(os.getenv("FULLMARK_IMAGE_DIR") or os.getenv("OUTPUT_DIR", "./output"))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         counter = 1
+        results: dict[str, str] = {}
         for img in soup.find_all("img"):
             src = img.get("src", "")
             if not src or src.startswith("data:"):
@@ -164,8 +183,17 @@ class WebAgent:
                 img["src"] = filename
                 counter += 1
                 logger.debug("downloaded %s → %s", img_url, filename)
+                # Extract content from the image via ImageAgent (OCR / vision / embed)
+                try:
+                    from fullmark.agents.image_agent import ImageAgent
+                    results[filename] = ImageAgent().convert(dest)
+                except Exception as img_exc:
+                    logger.debug("ImageAgent skipped %s: %s", filename, img_exc)
+                    results[filename] = ""
             except Exception as exc:
                 logger.debug("skipped image %s: %s", img_url, exc)
+
+        return results
 
     # ──────────────────────────────────────────────────────────────────────────
     # RSS / Atom feeds
