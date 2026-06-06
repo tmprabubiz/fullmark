@@ -1,0 +1,242 @@
+"""
+fullmark/agents/web_agent.py
+-----------------------------
+Handles: HTTP/HTTPS URLs, local HTML files, RSS feeds, YouTube URLs.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from pathlib import Path
+from urllib.parse import urlparse, urljoin
+
+from dotenv import load_dotenv
+
+from fullmark import AgentError
+from fullmark.utils.markdown_utils import clean_text, front_matter, heading
+
+load_dotenv()
+logger = logging.getLogger(__name__)
+
+_AGENT_NAME = "WebAgent"
+_DEFAULT_TIMEOUT = int(os.getenv("WEB_REQUEST_TIMEOUT", "30"))
+_USER_AGENT = os.getenv(
+    "WEB_USER_AGENT",
+    "FullMark/1.0 (+https://github.com/tmprabubiz/fullmark)",
+)
+_YOUTUBE_DOMAINS = {"youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"}
+
+
+class WebAgent:
+    """
+    Convert web sources (URLs, HTML files, RSS feeds, YouTube) to Markdown.
+    """
+
+    def convert(self, source: str | Path) -> str:
+        """
+        Convert *source* to a Markdown string.
+
+        Args:
+            source: A URL string or path to a local HTML file.
+
+        Returns:
+            Markdown string with YAML front matter.
+
+        Raises:
+            AgentError: If the source cannot be fetched or parsed.
+        """
+        source_str = str(source)
+
+        if source_str.startswith(("http://", "https://")):
+            parsed = urlparse(source_str)
+            if parsed.netloc in _YOUTUBE_DOMAINS:
+                body = self._convert_youtube(source_str)
+            else:
+                html = self._fetch_url(source_str)
+                if self._is_rss(html):
+                    body = self._convert_rss_url(source_str)
+                else:
+                    body = self._convert_html(html, base_url=source_str)
+        else:
+            path = Path(source_str)
+            if not path.exists():
+                raise AgentError(f"File not found: {path}")
+            html = path.read_text(encoding="utf-8", errors="replace")
+            body = self._convert_html(html, base_url=path.as_uri())
+
+        fm = front_matter(source_str, _AGENT_NAME)
+        return f"{fm}\n\n{body}"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Fetch
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _fetch_url(self, url: str) -> str:
+        try:
+            import requests  # type: ignore
+        except ImportError:
+            raise AgentError("requests not installed — cannot fetch URLs")
+        try:
+            resp = requests.get(
+                url,
+                timeout=_DEFAULT_TIMEOUT,
+                headers={"User-Agent": _USER_AGENT},
+            )
+            resp.raise_for_status()
+            return resp.text
+        except Exception as exc:
+            raise AgentError(f"Failed to fetch {url}: {exc}") from exc
+
+    def _is_rss(self, html: str) -> bool:
+        return bool(re.search(r"<(rss|feed|atom)[^>]*>", html[:2000], re.IGNORECASE))
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # HTML → Markdown
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _convert_html(self, html: str, base_url: str = "") -> str:
+        try:
+            from markdownify import markdownify as md  # type: ignore
+            from bs4 import BeautifulSoup  # type: ignore
+        except ImportError:
+            raise AgentError("markdownify or beautifulsoup4 not installed")
+
+        soup = BeautifulSoup(html, "lxml")
+
+        # Remove nav, footer, scripts, styles — keep content
+        for tag in soup.find_all(["script", "style", "nav", "footer", "aside"]):
+            tag.decompose()
+
+        # Handle images — download if AUTO_DOWNLOAD_IMAGES and base_url is http
+        if os.getenv("AUTO_DOWNLOAD_IMAGES", "true").lower() == "true" and base_url.startswith("http"):
+            self._collect_images(soup, base_url)
+
+        # Convert to Markdown
+        content = str(soup)
+        markdown = md(content, heading_style="ATX", bullets="-", strip=["a"])
+        return clean_text(markdown)
+
+    def _collect_images(self, soup, base_url: str) -> None:
+        """Download <img> tags and rename sequentially; update src attribute."""
+        try:
+            import requests  # type: ignore
+        except ImportError:
+            return
+
+        output_dir = Path(os.getenv("OUTPUT_DIR", "./output"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        counter = 1
+        for img in soup.find_all("img"):
+            src = img.get("src", "")
+            if not src or src.startswith("data:"):
+                continue
+            # Skip tiny tracking pixels
+            try:
+                w = int(img.get("width", 999))
+                h = int(img.get("height", 999))
+                if w < 5 or h < 5:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+            img_url = urljoin(base_url, src)
+            filename = f"image-{counter:03d}.jpg"
+            dest = output_dir / filename
+            try:
+                resp = requests.get(
+                    img_url,
+                    timeout=10,
+                    headers={"User-Agent": _USER_AGENT},
+                )
+                resp.raise_for_status()
+                dest.write_bytes(resp.content)
+                img["src"] = filename
+                counter += 1
+                logger.debug("downloaded %s → %s", img_url, filename)
+            except Exception as exc:
+                logger.debug("skipped image %s: %s", img_url, exc)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # RSS / Atom feeds
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _convert_rss_url(self, url: str) -> str:
+        try:
+            import feedparser  # type: ignore
+        except ImportError:
+            raise AgentError("feedparser not installed — cannot parse RSS")
+
+        feed = feedparser.parse(url)
+        if feed.bozo and not feed.entries:
+            raise AgentError(f"Failed to parse RSS feed: {url}")
+
+        parts = [heading(feed.feed.get("title", "RSS Feed"), 1), ""]
+        for i, entry in enumerate(feed.entries, 1):
+            title   = entry.get("title", f"Entry {i}")
+            link    = entry.get("link", "")
+            summary = clean_text(entry.get("summary", ""))
+            date    = entry.get("published", "")
+            parts.append(f"## {i}. {title}")
+            if date:
+                parts.append(f"*{date}*")
+            if link:
+                parts.append(f"[Read more]({link})")
+            if summary:
+                parts.append(summary)
+            parts.append("")
+
+        return "\n\n".join(parts)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # YouTube
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _convert_youtube(self, url: str) -> str:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
+            from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound  # type: ignore
+        except ImportError:
+            raise AgentError("youtube-transcript-api not installed")
+
+        video_id = self._extract_youtube_id(url)
+        if not video_id:
+            raise AgentError(f"Cannot extract video ID from YouTube URL: {url}")
+
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        except (TranscriptsDisabled, NoTranscriptFound) as exc:
+            raise AgentError(f"No transcript for {url}: {exc}") from exc
+        except Exception as exc:
+            raise AgentError(f"YouTube transcript fetch failed for {url}: {exc}") from exc
+
+        parts = [
+            heading(f"YouTube Transcript", 1),
+            f"**URL:** {url}",
+            f"**Video ID:** {video_id}",
+            "",
+            heading("Transcript", 2),
+        ]
+
+        for entry in transcript_list:
+            start = entry.get("start", 0)
+            text  = entry.get("text", "").strip()
+            mins  = int(start) // 60
+            secs  = int(start) % 60
+            parts.append(f"[{mins:02d}:{secs:02d}] {text}")
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _extract_youtube_id(url: str) -> str | None:
+        """Extract video ID from various YouTube URL formats."""
+        patterns = [
+            r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})",
+        ]
+        for pat in patterns:
+            m = re.search(pat, url)
+            if m:
+                return m.group(1)
+        return None
