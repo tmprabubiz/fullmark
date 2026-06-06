@@ -170,8 +170,6 @@ class WebAgent:
                 pass
 
             img_url = urljoin(base_url, src)
-            filename = f"image-{counter:03d}.jpg"
-            dest = output_dir / filename
             try:
                 resp = requests.get(
                     img_url,
@@ -179,6 +177,33 @@ class WebAgent:
                     headers={"User-Agent": _USER_AGENT},
                 )
                 resp.raise_for_status()
+
+                # Determine real extension from Content-Type or content sniff
+                ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                _MIME_EXT = {
+                    "image/svg+xml": ".svg",
+                    "image/png": ".png",
+                    "image/gif": ".gif",
+                    "image/webp": ".webp",
+                    "image/bmp": ".bmp",
+                    "image/tiff": ".tiff",
+                    "image/jpeg": ".jpg",
+                }
+                ext = _MIME_EXT.get(ct, "")
+                if not ext:
+                    # Sniff first bytes
+                    head = resp.content[:16]
+                    if head[:4] in (b'\x89PNG', b'GIF8') or head[:2] == b'BM':
+                        ext = {b'\x89PNG': ".png", b'GIF8': ".gif", b'BM': ".bmp"}[head[:4] if head[:4] in (b'\x89PNG', b'GIF8') else head[:2]]
+                    elif head[:2] in (b'\xff\xd8',):
+                        ext = ".jpg"
+                    elif b"<svg" in head or b"<?xml" in head:
+                        ext = ".svg"
+                    else:
+                        ext = ".jpg"  # fallback
+
+                filename = f"image-{counter:03d}{ext}"
+                dest = output_dir / filename
                 dest.write_bytes(resp.content)
                 img["src"] = filename
                 counter += 1
