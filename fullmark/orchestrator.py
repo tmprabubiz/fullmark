@@ -15,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from fullmark import AgentError
-from fullmark.utils.file_utils import detect_agent, unpack_zip, safe_output_path
+from fullmark.utils.file_utils import detect_agent, unpack_zip, safe_output_path, is_url_list_file
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -99,6 +99,19 @@ class Orchestrator:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _convert_file(self, path: Path) -> tuple[str, str] | None:
+        # Check for URL-list files before normal agent routing
+        if is_url_list_file(path):
+            logger.info("routing %s → UrlListAgent (URL-list file)", path.name)
+            try:
+                md = self._run_agent("url_list", path)
+            except Exception as exc:
+                logger.error("UrlListAgent failed on %s: %s", path, exc)
+                return None
+            if md:
+                self._write(str(path), md)
+                return (str(path), md)
+            return None
+
         agent_name = detect_agent(path)
         logger.info("routing %s → %sAgent", path.name, agent_name.capitalize())
 
@@ -159,6 +172,9 @@ class Orchestrator:
         if agent_name == "video":
             from fullmark.agents.video_agent import VideoAgent
             return VideoAgent().convert(source)
+        if agent_name == "url_list":
+            from fullmark.agents.web_agent import UrlListAgent
+            return UrlListAgent().convert(source)
         return None
 
     def _write(self, source: str, markdown: str) -> None:

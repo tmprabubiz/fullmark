@@ -78,6 +78,30 @@ class DocumentAgent:
 
         logger.debug("converting %s with %s", path.name, converter.__name__)
         body = converter(path)
+
+        # Prepend a ## format section heading if body doesn't already start with one
+        format_labels: dict[str, str] = {
+            ".pdf":  "PDF Document",
+            ".docx": "Word Document",
+            ".doc":  "Word Document",
+            ".rtf":  "RTF Document",
+            ".txt":  "Plain Text",
+            ".epub": "EPUB Book",
+            ".xlsx": "Spreadsheet",
+            ".xls":  "Spreadsheet",
+            ".ods":  "Spreadsheet",
+            ".csv":  "CSV Data",
+            ".pptx": "Slideshow",
+            ".ppt":  "Slideshow",
+            ".odp":  "Slideshow",
+            ".ipynb": "Jupyter Notebook",
+            ".msg":  "Email (MSG)",
+            ".eml":  "Email (EML)",
+        }
+        label = format_labels.get(ext, ext.lstrip(".").upper())
+        if not body.lstrip().startswith("#"):
+            body = f"## {label}: {path.name}\n\n{body}"
+
         fm = front_matter(path.name, _AGENT_NAME)
         return f"{fm}\n\n{body}"
 

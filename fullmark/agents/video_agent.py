@@ -79,6 +79,9 @@ class VideoAgent:
             frames=[{"timestamp": f.timestamp, "ocr_text": f.ocr_text, "path": str(f.path)} for f in frames],
         )
         body = CompilerAgent().compile(compiler_input)
+        fmt_label = "Audio Transcription" if ext in _AUDIO_EXTENSIONS else "Video Transcription"
+        if not body.lstrip().startswith("#"):
+            body = f"## {fmt_label}: {path.name}\n\n{body}"
         fm = front_matter(path.name, _AGENT_NAME)
         return f"{fm}\n\n{body}"
 

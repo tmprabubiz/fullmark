@@ -190,3 +190,39 @@ class TestDocx:
         assert "# Introduction" in result
         assert "Body text here." in result
         assert "agent: DocumentAgent" in result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Section headings (## format labels)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestSectionHeadings:
+    def test_txt_has_plain_text_heading(self, tmp_path):
+        f = tmp_path / "notes.txt"
+        f.write_text("hello world", encoding="utf-8")
+        result = _agent().convert(f)
+        assert "## Plain Text:" in result
+
+    def test_csv_has_csv_data_heading(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("col1,col2\na,b\n", encoding="utf-8")
+        result = _agent().convert(f)
+        assert "## CSV Data:" in result
+
+    def test_docx_heading_not_duplicated(self, tmp_path):
+        """If DOCX body already starts with #, the ## wrapper should not be added."""
+        f = tmp_path / "report.docx"
+        f.write_bytes(b"fake")
+        para1 = MagicMock()
+        para1.style.name = "Heading 1"
+        para1.text = "Title"
+        para2 = MagicMock()
+        para2.style.name = "Normal"
+        para2.text = "Content"
+        mock_doc = MagicMock()
+        mock_doc.paragraphs = [para1, para2]
+        mock_doc.tables = []
+        with patch("docx.Document", return_value=mock_doc):
+            result = _agent().convert(f)
+        # Body starts with # so no ## Word Document: wrapper
+        assert "## Word Document:" not in result

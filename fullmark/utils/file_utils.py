@@ -1,12 +1,13 @@
 """
 fullmark/utils/file_utils.py
 ----------------------------
-File type detection and ZIP unpacking utilities.
+File type detection, ZIP unpacking, and URL-list extraction utilities.
 """
 
 from __future__ import annotations
 
 import mimetypes
+import re
 import zipfile
 import logging
 import tempfile
@@ -41,6 +42,13 @@ WEB_EXTENSIONS: frozenset[str] = frozenset({
 ARCHIVE_EXTENSIONS: frozenset[str] = frozenset({
     ".zip",
 })
+
+# Extensions that may contain URL lists — routed to url_list agent
+URL_LIST_EXTENSIONS: frozenset[str] = frozenset({
+    ".txt", ".docx", ".doc", ".xlsx", ".xls", ".ods", ".csv",
+})
+
+_URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 
 
 def detect_agent(source: str | Path) -> str:
@@ -96,6 +104,98 @@ def detect_agent(source: str | Path) -> str:
 
     logger.warning("Cannot detect agent for %r — extension %r not in routing table", source_str, ext)
     return "unknown"
+
+
+def extract_urls_from_file(path: Path) -> tuple[list[str], list[str]]:
+    """
+    Extract HTTP/HTTPS URLs from a .txt, .docx/.doc, or spreadsheet file.
+
+    Only lines/cells whose stripped content is a valid URL are collected.
+    All other lines are recorded as *skipped*.
+
+    Args:
+        path: Path to the URL-list file.
+
+    Returns:
+        Tuple of (urls, skipped_lines).
+        ``urls`` — list of valid URL strings.
+        ``skipped_lines`` — list of non-empty lines that were not URLs.
+    """
+    ext = path.suffix.lower()
+    raw_lines: list[str] = []
+
+    if ext == ".txt":
+        raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    elif ext in (".docx", ".doc"):
+        try:
+            from docx import Document  # type: ignore
+            doc = Document(str(path))
+            for para in doc.paragraphs:
+                raw_lines.append(para.text)
+            # Also scan tables
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        raw_lines.append(cell.text)
+        except ImportError:
+            logger.warning("python-docx not installed — cannot extract URLs from %s", path.name)
+        except Exception as exc:
+            logger.warning("Failed to read %s: %s", path.name, exc)
+
+    elif ext in (".xlsx", ".xls", ".ods"):
+        try:
+            import openpyxl  # type: ignore
+            wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    for cell in row:
+                        if cell is not None:
+                            raw_lines.append(str(cell).strip())
+        except ImportError:
+            logger.warning("openpyxl not installed — cannot extract URLs from %s", path.name)
+        except Exception as exc:
+            logger.warning("Failed to read %s: %s", path.name, exc)
+
+    elif ext == ".csv":
+        import csv
+        try:
+            with path.open(newline="", encoding="utf-8", errors="replace") as f:
+                for row in csv.reader(f):
+                    for cell in row:
+                        raw_lines.append(cell.strip())
+        except Exception as exc:
+            logger.warning("Failed to read %s: %s", path.name, exc)
+
+    urls: list[str] = []
+    skipped: list[str] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _URL_RE.match(stripped):
+            urls.append(stripped)
+        else:
+            skipped.append(stripped)
+
+    return urls, skipped
+
+
+def is_url_list_file(path: Path) -> bool:
+    """
+    Return True if *path* is a supported URL-list file type AND
+    contains at least one valid HTTP/HTTPS URL.
+
+    This is a quick heuristic — caller should use ``extract_urls_from_file``
+    for the full extraction.
+    """
+    if path.suffix.lower() not in URL_LIST_EXTENSIONS:
+        return False
+    try:
+        urls, _ = extract_urls_from_file(path)
+        return len(urls) > 0
+    except Exception:
+        return False
 
 
 def unpack_zip(zip_path: Path) -> tuple[Path, list[Path]]:

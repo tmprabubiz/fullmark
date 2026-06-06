@@ -1,7 +1,8 @@
 """
 fullmark/agents/web_agent.py
 -----------------------------
-Handles: HTTP/HTTPS URLs, local HTML files, RSS feeds, YouTube URLs.
+Handles: HTTP/HTTPS URLs, local HTML files, RSS feeds, YouTube URLs,
+         and URL-list files (.txt, .docx, .doc, spreadsheets).
 """
 
 from __future__ import annotations
@@ -53,18 +54,25 @@ class WebAgent:
             parsed = urlparse(source_str)
             if parsed.netloc in _YOUTUBE_DOMAINS:
                 body = self._convert_youtube(source_str)
+                fmt_label = "YouTube Video"
             else:
                 html = self._fetch_url(source_str)
                 if self._is_rss(html):
                     body = self._convert_rss_url(source_str)
+                    fmt_label = "RSS Feed"
                 else:
                     body = self._convert_html(html, base_url=source_str)
+                    fmt_label = "Web Page"
         else:
             path = Path(source_str)
             if not path.exists():
                 raise AgentError(f"File not found: {path}")
             html = path.read_text(encoding="utf-8", errors="replace")
             body = self._convert_html(html, base_url=path.as_uri())
+            fmt_label = "HTML File"
+
+        if not body.lstrip().startswith("#"):
+            body = f"## {fmt_label}: {source_str}\n\n{body}"
 
         fm = front_matter(source_str, _AGENT_NAME)
         return f"{fm}\n\n{body}"
@@ -240,3 +248,88 @@ class WebAgent:
             if m:
                 return m.group(1)
         return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# URL List Agent
+# ──────────────────────────────────────────────────────────────────────────────
+
+class UrlListAgent:
+    """
+    Process a file containing a list of URLs (.txt, .docx/.doc, or spreadsheet).
+
+    Each valid URL is fetched and converted via ``WebAgent``.
+    Lines that are not valid URLs are skipped and reported in the output.
+    """
+
+    def convert(self, source: str | Path) -> str:
+        """
+        Extract URLs from *source* file and convert each one to Markdown.
+
+        Args:
+            source: Path to a .txt, .docx, .doc, .xlsx, .xls, .ods, or .csv
+                    file containing URLs (one per line / cell).
+
+        Returns:
+            Combined Markdown string with YAML front matter.
+
+        Raises:
+            AgentError: If the file cannot be read.
+        """
+        from fullmark.utils.file_utils import extract_urls_from_file
+
+        path = Path(source)
+        if not path.exists():
+            raise AgentError(f"File not found: {path}")
+
+        urls, skipped = extract_urls_from_file(path)
+
+        if not urls and not skipped:
+            raise AgentError(f"No content found in URL list file: {path.name}")
+
+        fm = front_matter(path.name, "UrlListAgent")
+        parts: list[str] = [fm, ""]
+
+        parts.append(f"## URL List: {path.name}")
+        parts.append(f"")
+        parts.append(f"**Total URLs found:** {len(urls)}  ")
+        parts.append(f"**Lines skipped (not a URL):** {len(skipped)}")
+        parts.append("")
+
+        if skipped:
+            parts.append("## Skipped Lines")
+            parts.append("")
+            parts.append("The following lines were not recognised as URLs and were ignored:")
+            parts.append("")
+            for line in skipped:
+                parts.append(f"- `{line}`")
+            parts.append("")
+
+        if not urls:
+            parts.append("*No valid URLs found in this file.*")
+            return "\n".join(parts)
+
+        agent = WebAgent()
+        for i, url in enumerate(urls, 1):
+            parts.append(f"---")
+            parts.append(f"")
+            parts.append(f"## URL {i}: {url}")
+            parts.append("")
+            logger.info("UrlListAgent: converting URL %d/%d — %s", i, len(urls), url)
+            try:
+                md = agent.convert(url)
+                # Strip front matter from individual URL results — already have one
+                lines = md.splitlines()
+                if lines and lines[0].strip() == "---":
+                    try:
+                        end = lines.index("---", 1)
+                        md = "\n".join(lines[end + 1:]).lstrip()
+                    except ValueError:
+                        pass
+                parts.append(md)
+            except AgentError as exc:
+                logger.warning("Failed to convert %s: %s", url, exc)
+                parts.append(f"**Error:** Could not convert this URL — {exc}")
+            parts.append("")
+
+        return "\n".join(parts)

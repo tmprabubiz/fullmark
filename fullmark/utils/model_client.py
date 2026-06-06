@@ -108,6 +108,52 @@ class ModelClient:
             )
         return None
 
+    def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> Optional[str]:
+        """
+        Send an image to a vision-capable LLM and return a text description.
+
+        Tries each provider in VISION_CHAIN (env var, comma-separated).
+        Falls back to COMPILER_CHAIN providers that support vision.
+        Returns ``None`` if no vision provider is available.
+
+        Args:
+            image_bytes: Raw image bytes.
+            mime_type: MIME type of the image (e.g. ``"image/jpeg"``).
+
+        Returns:
+            Description string, or ``None`` if no provider can handle vision.
+        """
+        import base64
+        b64 = base64.b64encode(image_bytes).decode()
+        data_uri = f"data:{mime_type};base64,{b64}"
+
+        vision_chain_env = os.getenv("VISION_CHAIN", "")
+        if vision_chain_env:
+            vision_chain = [p.strip().lower() for p in vision_chain_env.split(",") if p.strip()]
+        else:
+            # Default vision providers in priority order
+            vision_chain = ["gemini", "gemini_free", "openai", "anthropic", "openrouter_free"]
+
+        system = (
+            "You are a visual content analyst. Describe the image in detail, "
+            "extracting all text, numbers, labels, relationships, and visual meaning. "
+            "Format as Markdown: use ## headings for major sections, bullet points for lists, "
+            "and GFM tables for any tabular data you observe. Be thorough — no data should be omitted."
+        )
+
+        for provider in vision_chain:
+            logger.debug("Trying vision provider: %s", provider)
+            try:
+                result = self._dispatch_vision(provider, data_uri, mime_type, system)
+                if result is not None:
+                    logger.debug("Vision provider %s succeeded", provider)
+                    return result
+            except Exception as exc:
+                logger.warning("Vision provider %r failed: %s", provider, exc)
+
+        logger.warning("No vision LLM provider succeeded — will use base64 embedding fallback")
+        return None
+
     # ──────────────────────────────────────────────────────────────────────────
     # Dispatcher
     # ──────────────────────────────────────────────────────────────────────────
@@ -124,6 +170,24 @@ class ModelClient:
         if provider in _OPENAI_COMPAT_PROVIDERS:
             return self._call_openai_compat(provider, prompt, system)
         logger.debug("Unknown provider %r — skipping", provider)
+        return None
+
+    def _dispatch_vision(
+        self,
+        provider: str,
+        data_uri: str,
+        mime_type: str,
+        system: str | None,
+    ) -> Optional[str]:
+        if provider in ("gemini", "gemini_free", "gemini_pro"):
+            return self._call_gemini_vision(data_uri, mime_type, system)
+        if provider == "anthropic":
+            return self._call_anthropic_vision(data_uri, mime_type, system)
+        if provider in _OPENAI_COMPAT_PROVIDERS:
+            return self._call_openai_compat_vision(provider, data_uri, mime_type, system)
+        if provider == "ollama":
+            return self._call_ollama_vision(data_uri, mime_type, system)
+        logger.debug("Provider %r does not support vision — skipping", provider)
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -310,3 +374,182 @@ class ModelClient:
             except Exception as exc:
                 logger.debug("Ollama model %r failed: %s", model, exc)
         return None
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Vision methods
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _call_gemini_vision(
+        self, data_uri: str, mime_type: str, system: str | None
+    ) -> Optional[str]:
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not api_key or api_key == _PLACEHOLDER:
+            return None
+
+        primary = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        fallbacks_str = os.getenv("GEMINI_FALLBACK_MODELS", primary)
+        model_names = [m.strip() for m in fallbacks_str.split(",") if m.strip()]
+        if primary not in model_names:
+            model_names.insert(0, primary)
+
+        # Extract base64 from data URI
+        import base64
+        b64 = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+        image_bytes = base64.b64decode(b64)
+
+        # Try new google-genai SDK
+        try:
+            import google.genai as genai_new  # type: ignore
+            import google.genai.types as types  # type: ignore
+            client = genai_new.Client(api_key=api_key)
+            for model_name in model_names:
+                try:
+                    parts_content: list = []
+                    if system:
+                        parts_content.append(system)
+                    parts_content.append(
+                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+                    )
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=parts_content,
+                    )
+                    return response.text
+                except Exception as exc:
+                    logger.debug("gemini vision model %r failed: %s", model_name, exc)
+            return None
+        except ImportError:
+            pass
+
+        # Fallback to legacy SDK
+        try:
+            import warnings
+            import google.generativeai as genai_old  # type: ignore
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                genai_old.configure(api_key=api_key)
+            for model_name in model_names:
+                try:
+                    from PIL import Image as _PILImage  # type: ignore
+                    import io as _io
+                    img = _PILImage.open(_io.BytesIO(image_bytes))
+                    model = genai_old.GenerativeModel(model_name)
+                    prompt_parts = [system or "", img]
+                    response = model.generate_content(prompt_parts)
+                    return response.text
+                except Exception as exc:
+                    logger.debug("legacy gemini vision %r failed: %s", model_name, exc)
+            return None
+        except ImportError:
+            return None
+
+    def _call_anthropic_vision(
+        self, data_uri: str, mime_type: str, system: str | None
+    ) -> Optional[str]:
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key or api_key == _PLACEHOLDER:
+            return None
+        try:
+            import anthropic  # type: ignore
+        except ImportError:
+            return None
+
+        model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-3-5-20241022")
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # Anthropic expects base64 source, not data URI
+        import base64
+        b64 = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+
+        content: list = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": b64,
+                },
+            },
+            {"type": "text", "text": system or "Describe this image in detail as Markdown."},
+        ]
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if system:
+            kwargs["system"] = system
+        try:
+            response = client.messages.create(**kwargs)
+            return response.content[0].text
+        except Exception as exc:
+            logger.debug("Anthropic vision failed: %s", exc)
+            return None
+
+    def _call_openai_compat_vision(
+        self, provider: str, data_uri: str, mime_type: str, system: str | None
+    ) -> Optional[str]:
+        prefix, default_url, default_model = _OPENAI_COMPAT_PROVIDERS[provider]
+        api_key  = os.getenv(f"{prefix}API_KEY", "")
+        base_url = os.getenv(f"{prefix}BASE_URL", default_url)
+        model    = os.getenv(f"{prefix}MODEL", default_model)
+
+        if not api_key or api_key == _PLACEHOLDER:
+            return None
+        try:
+            from openai import OpenAI  # type: ignore
+        except ImportError:
+            return None
+
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": data_uri}},
+                {"type": "text", "text": system or "Describe this image in detail as Markdown."},
+            ],
+        })
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=4096,
+            )
+            return response.choices[0].message.content
+        except Exception as exc:
+            logger.debug("OpenAI-compat vision provider %r failed: %s", provider, exc)
+            return None
+
+    def _call_ollama_vision(
+        self, data_uri: str, mime_type: str, system: str | None
+    ) -> Optional[str]:
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        # Vision-capable Ollama models (llava family)
+        model = os.getenv("OLLAMA_VISION_MODEL", os.getenv("OLLAMA_MODEL", "llava"))
+        try:
+            import ollama as _ollama  # type: ignore
+        except ImportError:
+            return None
+
+        import base64
+        b64 = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+        image_bytes = base64.b64decode(b64)
+
+        ollama_client = _ollama.Client(host=base_url)
+        prompt = system or "Describe this image in detail as Markdown."
+        try:
+            response = ollama_client.chat(
+                model=model,
+                messages=[{
+                    "role": "user",
+                    "content": prompt,
+                    "images": [image_bytes],
+                }],
+            )
+            return response["message"]["content"]
+        except Exception as exc:
+            logger.debug("Ollama vision model %r failed: %s", model, exc)
+            return None

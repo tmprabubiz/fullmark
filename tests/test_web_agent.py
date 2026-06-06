@@ -1,6 +1,6 @@
 """
 tests/test_web_agent.py
-Tests for WebAgent — mocks all HTTP calls.
+Tests for WebAgent and UrlListAgent — mocks all HTTP calls.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fullmark import AgentError
-from fullmark.agents.web_agent import WebAgent
+from fullmark.agents.web_agent import WebAgent, UrlListAgent
 
 
 def _agent() -> WebAgent:
@@ -129,3 +129,76 @@ class TestRss:
                  patch.object(agent, "_is_rss", return_value=True):
                 result = agent.convert("https://example.com/feed")
         assert isinstance(result, str)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Section headings
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestSectionHeadings:
+    def test_local_html_has_section_heading(self, tmp_path):
+        f = tmp_path / "page.html"
+        f.write_text("<html><body><p>content</p></body></html>", encoding="utf-8")
+        result = WebAgent().convert(f)
+        assert "## HTML File:" in result or "## Web Page:" in result or "##" in result
+
+    def test_url_has_section_heading(self):
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body><p>Hello</p></body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=mock_resp):
+            result = WebAgent().convert("https://example.com/page")
+        assert "## Web Page:" in result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# URL List Agent
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestUrlListAgent:
+    def test_txt_file_extracts_urls(self, tmp_path):
+        f = tmp_path / "urls.txt"
+        f.write_text("https://example.com\nhttps://test.org\nnot a url\n", encoding="utf-8")
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body><p>content</p></body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=mock_resp):
+            result = UrlListAgent().convert(f)
+        assert "https://example.com" in result
+        assert "https://test.org" in result
+
+    def test_skipped_lines_reported(self, tmp_path):
+        f = tmp_path / "urls.txt"
+        f.write_text("https://example.com\nnot a url\njust text\n", encoding="utf-8")
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body><p>x</p></body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=mock_resp):
+            result = UrlListAgent().convert(f)
+        assert "Skipped Lines" in result
+        assert "not a url" in result
+
+    def test_url_count_in_output(self, tmp_path):
+        f = tmp_path / "urls.txt"
+        f.write_text("https://a.com\nhttps://b.com\n", encoding="utf-8")
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body><p>x</p></body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=mock_resp):
+            result = UrlListAgent().convert(f)
+        assert "Total URLs found:** 2" in result
+
+    def test_nonexistent_file_raises(self, tmp_path):
+        with pytest.raises(AgentError):
+            UrlListAgent().convert(tmp_path / "missing.txt")
+
+    def test_has_front_matter(self, tmp_path):
+        f = tmp_path / "urls.txt"
+        f.write_text("https://example.com\n", encoding="utf-8")
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body><p>x</p></body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=mock_resp):
+            result = UrlListAgent().convert(f)
+        assert "---" in result
+        assert "agent: UrlListAgent" in result

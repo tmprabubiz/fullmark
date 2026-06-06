@@ -135,3 +135,68 @@ class TestSvg:
         result = _agent().convert(f)
         # Should contain mermaid block or text content
         assert "NodeA" in result or "mermaid" in result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Section headings
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestSectionHeadings:
+    def test_raster_has_section_heading(self, tmp_path):
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"fake jpeg")
+        with patch.object(ImageAgent, "_ocr_tesseract", return_value="some text"), \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        assert "##" in result
+
+    def test_svg_has_section_heading(self, tmp_path):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>Hello</text></svg>'
+        f = tmp_path / "diagram.svg"
+        f.write_text(svg)
+        with patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        assert "##" in result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vision LLM fallback
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestVisionFallback:
+    def test_vision_llm_called_when_no_ocr_text(self, tmp_path):
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"fake jpeg")
+        with patch.object(ImageAgent, "_ocr_tesseract", return_value=""), \
+             patch.object(ImageAgent, "_ocr_easyocr", return_value=""), \
+             patch.object(ImageAgent, "_describe_with_vision", return_value="A dog in a park.") as mock_vis, \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        mock_vis.assert_called_once()
+        assert "A dog in a park." in result
+
+    def test_base64_fallback_when_vision_returns_none(self, tmp_path):
+        import io
+        from PIL import Image as PILImage
+        img = PILImage.new("RGB", (10, 10), color="red")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(buf.getvalue())
+        with patch.object(ImageAgent, "_ocr_tesseract", return_value=""), \
+             patch.object(ImageAgent, "_ocr_easyocr", return_value=""), \
+             patch.object(ImageAgent, "_describe_with_vision", return_value=""), \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        # Should fall back to base64 embed
+        assert "data:image" in result or "photo.jpg" in result
+
+    def test_vision_description_has_heading(self, tmp_path):
+        f = tmp_path / "chart.png"
+        f.write_bytes(b"fake png")
+        with patch.object(ImageAgent, "_ocr_tesseract", return_value=""), \
+             patch.object(ImageAgent, "_ocr_easyocr", return_value=""), \
+             patch.object(ImageAgent, "_describe_with_vision", return_value="## Chart\n\nBar chart showing sales."), \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        assert "Chart" in result

@@ -55,8 +55,13 @@ class ImageAgent:
         ext = path.suffix.lower()
         if ext == ".svg":
             body = self._convert_svg(path)
+            fmt_label = "SVG Diagram"
         else:
             body = self._convert_raster(path)
+            fmt_label = "Image"
+
+        if not body.lstrip().startswith("#"):
+            body = f"## {fmt_label}: {path.name}\n\n{body}"
 
         fm = front_matter(path.name, _AGENT_NAME, extra=self._exif_meta(path))
         return f"{fm}\n\n{body}"
@@ -74,10 +79,15 @@ class ImageAgent:
         if ocr_text.strip():
             table_md = self._try_table_detection(ocr_text)
             if table_md:
-                return f"{heading('Extracted Table', 2)}\n\n{table_md}"
-            return f"{heading('Extracted Text', 2)}\n\n{clean_text(ocr_text)}"
+                return f"## Extracted Table\n\n{table_md}"
+            return f"## Extracted Text\n\n{clean_text(ocr_text)}"
 
-        # Decorative — embed as base64
+        # No OCR text — try vision LLM first, then base64 embed as last resort
+        logger.debug("No OCR text in %s — trying vision LLM", path.name)
+        vision_md = self._describe_with_vision(path)
+        if vision_md:
+            return f"## Image Description\n\n{vision_md}"
+
         if _EMBED_DECORATIVE:
             return self._embed_decorative(path)
 
@@ -109,6 +119,33 @@ class ImageAgent:
             return " ".join(results)
         except Exception as exc:
             logger.warning("easyocr failed on %s: %s", path.name, exc)
+            return ""
+
+    def _describe_with_vision(self, path: Path) -> str:
+        """
+        Send the image to a vision LLM and return a Markdown description.
+        Returns empty string if no vision provider is available or call fails.
+        """
+        try:
+            from PIL import Image as _PILImage  # type: ignore
+            import io as _io
+
+            img = _PILImage.open(path).convert("RGB")
+            img.thumbnail((1024, 1024))  # cap size to stay within API limits
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            image_bytes = buf.getvalue()
+        except Exception as exc:
+            logger.debug("Cannot read image for vision LLM %s: %s", path.name, exc)
+            return ""
+
+        try:
+            from fullmark.utils.model_client import ModelClient
+            client = ModelClient()
+            result = client.describe_image(image_bytes, mime_type="image/jpeg")
+            return result or ""
+        except Exception as exc:
+            logger.debug("Vision LLM call failed for %s: %s", path.name, exc)
             return ""
 
     def _try_table_detection(self, text: str) -> str:
