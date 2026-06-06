@@ -24,6 +24,8 @@ FullMark takes files, folders, URLs, videos, images, and archives and converts t
 | **Web** | HTTP/HTTPS URLs, HTML, RSS, YouTube | Page content → Markdown; YouTube transcripts; RSS entries as numbered list |
 | **Archives** | ZIP | Auto-unpacked; each file routed to the right agent individually |
 | **URL Lists** | TXT, DOCX, XLSX, CSV with one URL per line | Each URL fetched and converted; non-URL lines reported as skipped |
+| **Source Code** | `.py` `.js` `.ts` `.go` `.rs` `.java` `.c` `.cpp` `.cs` `.rb` `.php` `.sh` `.sql` `.json` `.yaml` `.toml` `.tf` and [50+ more](#source-code-and-config-files) | Each file becomes a syntax-highlighted fenced code block |
+| **GitHub Repos** | `https://github.com/owner/repo` | Full repo tree via GitHub API — no git clone needed |
 
 Output files land in `./output/` by default — one `.md` per source. Files over 120,000 characters are automatically split into `name_001.md`, `name_002.md`, etc.
 
@@ -228,6 +230,8 @@ Each URL is fetched, converted, and saved as a separate `.md` file using the nam
 
 ### Crawl a site recursively
 
+### Crawl a site recursively
+
 ```bash
 python fullmark_cli.py https://example.com/docs --follow-links --crawl-depth 2 --max-pages 30 --crawl-delay 2
 ```
@@ -236,7 +240,94 @@ python fullmark_cli.py https://example.com/docs --follow-links --crawl-depth 2 -
 > Start with `--crawl-depth 1 --max-pages 10` to sample first.
 > Use `--crawl-delay` (default 2 seconds) to avoid rate-limiting.
 
-### Skip already-converted sources
+### Convert a GitHub repository — no clone needed
+
+Point FullMark at any public GitHub repo URL and it converts the entire codebase
+to a structured Markdown document — **without cloning**, saving disk space and setup time.
+
+```bash
+# Entire repo
+python fullmark_cli.py https://github.com/owner/repo
+
+# Specific branch
+python fullmark_cli.py https://github.com/owner/repo/tree/main
+
+# Just a subdirectory (recommended for large repos)
+python fullmark_cli.py https://github.com/owner/repo/tree/main/src
+```
+
+Output is a single `owner_repo.md` containing:
+- Repo tree overview
+- All text files grouped by directory
+- Each file in a syntax-highlighted fenced code block
+- Binary files noted but not embedded
+
+**How it works (GitHub ToS compliant):**
+- Uses the [GitHub Trees API](https://docs.github.com/en/rest/git/trees) — one API call lists every file path
+- Fetches raw content via `raw.githubusercontent.com` (CDN, not counted toward API rate limits)
+- Only reads — no write/commit/push operations
+- Fully within [GitHub's Acceptable Use Policy](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies)
+
+**Rate limits and authentication:**
+
+| Mode | Limit |
+|---|---|
+| Unauthenticated | 60 API requests/hour (raw fetches not counted) |
+| With `GITHUB_TOKEN` | 5,000 API requests/hour |
+
+Get a free token at [github.com/settings/tokens](https://github.com/settings/tokens) — no scopes needed for public repos. Add it to `.env`:
+```dotenv
+GITHUB_TOKEN=ghp_yourTokenHere
+```
+
+**What gets skipped automatically:**
+- `node_modules/`, `__pycache__/`, `.venv/`, `dist/`, `build/`
+- `*.min.js`, `*.map`, `*.lock` files
+- Compiled objects (`.pyc`, `.class`, `.o`, `.exe`)
+- Binary files (images, zips — noted in output but not embedded)
+- Files over `REPO_MAX_FILE_KB` (default 200 KB)
+
+Add your own skip patterns in `.env`:
+```dotenv
+REPO_SKIP_PATTERNS=tests/,docs/,examples/
+```
+
+**Practical use cases:**
+- Use a repo as a reference base without installing it locally
+- Feed a codebase into an LLM for analysis or Q&A
+- Archive a snapshot of a project's source as readable documentation
+- Review an unfamiliar repo quickly without cloning
+
+> ⚠ **Large repos:** Use a subpath (`/tree/main/src`) to limit scope.
+> A 500-file repo can produce a very large Markdown file — consider `--output` to a dedicated folder.
+
+---
+
+### Source code and config files
+
+Dropping a local folder of code into FullMark converts every file it recognises:
+
+```bash
+python fullmark_cli.py ./my-project/
+```
+
+Supported code/config extensions (50+):
+
+| Category | Extensions |
+|---|---|
+| Python | `.py` `.pyw` `.pyi` |
+| JavaScript / TypeScript | `.js` `.mjs` `.cjs` `.jsx` `.ts` `.tsx` |
+| JVM | `.java` `.kt` `.scala` `.groovy` |
+| C family | `.c` `.h` `.cpp` `.cs` |
+| Systems | `.go` `.rs` `.swift` `.zig` `.dart` |
+| Scripting | `.rb` `.php` `.pl` `.lua` `.r` |
+| Shell | `.sh` `.bash` `.ps1` `.bat` `.cmd` |
+| Data / config | `.json` `.yaml` `.toml` `.ini` `.cfg` `.xml` |
+| Database | `.sql` `.graphql` `.proto` |
+| Infrastructure | `.tf` `.tfvars` `.bicep` `.nix` |
+| Web front-end | `.css` `.scss` `.vue` `.svelte` |
+| Docs-as-code | `.rst` `.mdx` |
+| Misc | `.dockerfile` `.gitignore` `.editorconfig` `.lock` |
 
 ```bash
 python fullmark_cli.py ./docs/ --skip-existing
@@ -370,10 +461,12 @@ Either approach is fine. The important thing: **never commit `.env`**. The `.git
 ORCHESTRATOR  (extension + MIME routing)
     │
     ├── DocumentAgent   → PDF DOCX XLSX CSV PPTX EPUB IPYNB MSG EML RTF TXT
+    ├── CodeAgent       → .py .js .ts .go .rs .java .json .yaml .toml + 50 more
     ├── WebAgent        → URLs HTML RSS YouTube  +  UrlListAgent
     ├── ImageAgent      → JPG PNG SVG BMP TIFF WebP  (OCR → vision → base64)
-    └── VideoAgent      → MP4 AVI MOV MP3 WAV M4A   (ffmpeg + Whisper + scenes)
-                └── CompilerAgent  (LLM merge of transcript + frame OCR)
+    ├── VideoAgent      → MP4 AVI MOV MP3 WAV M4A   (ffmpeg + Whisper + scenes)
+    │           └── CompilerAgent  (LLM merge of transcript + frame OCR)
+    └── RepoAgent       → https://github.com/owner/repo  (GitHub Trees API, no clone)
 ```
 
 Every agent exposes `convert(source) -> str`. The orchestrator detects type, routes, and writes output. ZIP archives are unpacked and each entry routed individually.
@@ -416,15 +509,19 @@ fullmark/
   orchestrator.py      ← routing + output writing
   agents/
     document_agent.py  ← PDF DOCX XLSX CSV PPTX EPUB IPYNB MSG EML RTF TXT
+    code_agent.py      ← source code + config files (50+ extensions)
     web_agent.py       ← URLs HTML RSS YouTube
     image_agent.py     ← raster OCR + SVG→Mermaid
     video_agent.py     ← Whisper + scene detection + frame OCR
     compiler_agent.py  ← LLM merge of transcript + frame data
+    repo_agent.py      ← GitHub repo → Markdown (no clone, GitHub Trees API)
   utils/
     model_client.py    ← Gemini → OpenAI-compatible → Ollama fallback chain
     markdown_utils.py  ← front matter, GFM tables, base64 embed
-    file_utils.py      ← extension detection, ZIP unpacking
-tests/                 ← pytest suite (71 tests)
+    file_utils.py      ← extension detection, ZIP unpacking, URL naming
+    metadata_logger.py ← per-conversion JSON + Markdown log
+    crawler.py         ← recursive URL crawler (BFS, depth/delay/domain control)
+tests/                 ← pytest suite (147 tests)
 fullmark_cli.py        ← CLI entry point
 fullmark_preflight.py  ← system dependency checker
 .env.template          ← configuration template

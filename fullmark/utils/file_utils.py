@@ -48,7 +48,96 @@ URL_LIST_EXTENSIONS: frozenset[str] = frozenset({
     ".txt", ".docx", ".doc", ".xlsx", ".xls", ".ods", ".csv",
 })
 
+# Source-code and config file extensions — routed to document agent (code path)
+CODE_EXTENSIONS: frozenset[str] = frozenset({
+    # Python
+    ".py", ".pyw", ".pyi",
+    # JavaScript / TypeScript
+    ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx",
+    # Web front-end
+    ".css", ".scss", ".sass", ".less",
+    # JVM
+    ".java", ".kt", ".kts", ".scala", ".groovy",
+    # C family
+    ".c", ".h", ".cpp", ".cxx", ".cc", ".hh", ".hpp", ".cs",
+    # Systems / low-level
+    ".go", ".rs", ".swift", ".zig",
+    # Scripting
+    ".rb", ".php", ".pl", ".pm", ".lua", ".r", ".rmd",
+    # Shell
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    # Functional
+    ".hs", ".lhs", ".ml", ".mli", ".ex", ".exs", ".erl", ".clj",
+    # Mobile
+    ".dart", ".m", ".mm",
+    # Data / config
+    ".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".conf",
+    # Markup / schema
+    ".xml", ".xsd", ".xsl", ".graphql", ".gql", ".proto",
+    # Database
+    ".sql",
+    # Infrastructure
+    ".tf", ".tfvars", ".bicep", ".nix",
+    # Build systems
+    ".gradle", ".cmake", ".makefile",
+    # Frameworks
+    ".vue", ".svelte",
+    # Docs-as-code
+    ".rst", ".mdx",
+    # Misc text
+    ".dockerfile", ".gitignore", ".gitattributes", ".editorconfig",
+    ".env.example", ".env.template",
+    ".lock",
+})
+
+# Maps file extension → fenced-code-block language tag
+LANG_MAP: dict[str, str] = {
+    ".py": "python", ".pyw": "python", ".pyi": "python",
+    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "jsx",
+    ".ts": "typescript", ".tsx": "tsx",
+    ".css": "css", ".scss": "scss", ".sass": "sass", ".less": "less",
+    ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".scala": "scala", ".groovy": "groovy",
+    ".c": "c", ".h": "c", ".cpp": "cpp", ".cxx": "cpp",
+    ".cc": "cpp", ".hh": "cpp", ".hpp": "cpp",
+    ".cs": "csharp", ".go": "go", ".rs": "rust",
+    ".swift": "swift", ".zig": "zig", ".dart": "dart",
+    ".rb": "ruby", ".php": "php", ".pl": "perl", ".pm": "perl",
+    ".lua": "lua", ".r": "r", ".rmd": "r",
+    ".sh": "bash", ".bash": "bash", ".zsh": "bash", ".fish": "fish",
+    ".ps1": "powershell", ".bat": "batch", ".cmd": "batch",
+    ".hs": "haskell", ".lhs": "haskell",
+    ".ml": "ocaml", ".mli": "ocaml",
+    ".ex": "elixir", ".exs": "elixir",
+    ".erl": "erlang", ".hrl": "erlang",
+    ".clj": "clojure",
+    ".json": "json", ".jsonc": "json", ".json5": "json",
+    ".yaml": "yaml", ".yml": "yaml",
+    ".toml": "toml", ".ini": "ini", ".cfg": "ini", ".conf": "ini",
+    ".xml": "xml", ".xsd": "xml", ".xsl": "xml",
+    ".graphql": "graphql", ".gql": "graphql",
+    ".proto": "protobuf",
+    ".sql": "sql",
+    ".tf": "hcl", ".tfvars": "hcl", ".bicep": "bicep",
+    ".nix": "nix",
+    ".gradle": "groovy", ".cmake": "cmake",
+    ".vue": "vue", ".svelte": "svelte",
+    ".rst": "rst", ".mdx": "markdown",
+    ".dockerfile": "dockerfile",
+    ".html": "html", ".htm": "html",
+    ".m": "objc", ".mm": "objc",
+    ".lock": "yaml",
+}
+
 _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+
+# GitHub repo URL pattern: https://github.com/{owner}/{repo}[/tree/{branch}[/path]]
+_GITHUB_REPO_RE = re.compile(
+    r"^https://github\.com/[^/]+/[^/]+"
+    r"(?:/tree/[^/]+(?:/.*)?)?$",
+    re.IGNORECASE,
+)
 
 
 def detect_agent(source: str | Path) -> str:
@@ -63,6 +152,10 @@ def detect_agent(source: str | Path) -> str:
         ``"archive"``, or ``"unknown"``.
     """
     source_str = str(source)
+
+    # GitHub repo URL → repo agent
+    if _GITHUB_REPO_RE.match(source_str):
+        return "repo"
 
     # URL → Web Agent
     if source_str.startswith(("http://", "https://")):
@@ -81,6 +174,8 @@ def detect_agent(source: str | Path) -> str:
         return "image"
     if ext in VIDEO_EXTENSIONS:
         return "video"
+    if ext in CODE_EXTENSIONS:
+        return "code"
 
     # MIME fallback
     mime, _ = mimetypes.guess_type(source_str)

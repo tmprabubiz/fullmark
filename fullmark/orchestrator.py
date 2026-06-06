@@ -57,14 +57,15 @@ class Orchestrator:
         source_str = str(source)
         results: list[tuple[str, str]] = []
 
-        # URL
+        # URL — detect repo vs regular web
         if source_str.startswith(("http://", "https://")):
             if self._should_skip(source_str):
                 return results
-            md = self._run_agent("web", source_str)
+            agent_name = detect_agent(source_str)  # may return "repo" or "web"
+            md = self._run_agent(agent_name, source_str)
             if md:
                 results.append((source_str, md))
-                self._write(source_str, md, "web")
+                self._write(source_str, md, agent_name)
             self._meta_log.write_summary()
             return results
 
@@ -189,6 +190,12 @@ class Orchestrator:
         if agent_name == "url_list":
             from fullmark.agents.web_agent import UrlListAgent
             return UrlListAgent().convert(source)
+        if agent_name == "code":
+            from fullmark.agents.code_agent import CodeAgent
+            return CodeAgent().convert(source)
+        if agent_name == "repo":
+            from fullmark.agents.repo_agent import RepoAgent
+            return RepoAgent().convert(source)
         return None
 
     def _write(self, source: str, markdown: str, agent_name: str = "unknown") -> list[Path]:
