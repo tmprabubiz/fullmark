@@ -126,7 +126,10 @@ class VideoAgent:
             return []
 
         try:
-            model = whisper.load_model(_WHISPER_MODEL)
+            model = whisper.load_model(
+                _WHISPER_MODEL,
+                download_root=os.getenv("WHISPER_CACHE_DIR") or None,
+            )
             result = model.transcribe(str(audio_path), word_timestamps=False)
         except Exception as exc:
             logger.error("Whisper transcription failed: %s", exc)

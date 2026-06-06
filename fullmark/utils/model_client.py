@@ -127,20 +127,14 @@ class ModelClient:
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Gemini (google-generativeai SDK)
+    # Gemini (google-genai SDK — new; falls back to google-generativeai — old)
     # ──────────────────────────────────────────────────────────────────────────
 
     def _call_gemini(self, prompt: str, system: str | None, paid: bool = False) -> Optional[str]:
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key or api_key == _PLACEHOLDER:
             return None
-        try:
-            import google.generativeai as genai  # type: ignore
-        except ImportError:
-            logger.debug("google-generativeai not installed — skipping Gemini")
-            return None
 
-        genai.configure(api_key=api_key)
         if paid:
             model_names = [os.getenv("GEMINI_PRO_MODEL", "gemini-1.5-pro")]
         else:
@@ -151,13 +145,42 @@ class ModelClient:
                 model_names.insert(0, primary)
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
-        for model_name in model_names:
-            try:
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(full_prompt)
-                return response.text
-            except Exception as exc:
-                logger.debug("Gemini model %r failed: %s", model_name, exc)
+
+        # Try new google-genai SDK first
+        try:
+            import google.genai as genai_new  # type: ignore
+            client = genai_new.Client(api_key=api_key)
+            for model_name in model_names:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=full_prompt,
+                    )
+                    return response.text
+                except Exception as exc:
+                    logger.debug("google-genai model %r failed: %s", model_name, exc)
+            return None
+        except ImportError:
+            pass
+
+        # Fallback to legacy google-generativeai SDK
+        try:
+            import warnings
+            import google.generativeai as genai_old  # type: ignore
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                genai_old.configure(api_key=api_key)
+            for model_name in model_names:
+                try:
+                    model = genai_old.GenerativeModel(model_name)
+                    response = model.generate_content(full_prompt)
+                    return response.text
+                except Exception as exc:
+                    logger.debug("google-generativeai model %r failed: %s", model_name, exc)
+            return None
+        except ImportError:
+            logger.debug("Neither google-genai nor google-generativeai installed — skipping Gemini")
+            return None
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
