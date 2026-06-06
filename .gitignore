@@ -232,6 +232,9 @@ __marimo__/
 # FullMark — working/session files
 HANDOFF.md
 HANDOFF*.md
+AGENTS.md
+CLAUDE.md
+WORKFLOW.md
 SCRATCH.md
 SCRATCH*.md
 NOTES.md
