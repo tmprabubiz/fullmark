@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FullMark — never expose these
+.env
+/workspace/
+/test_outputs/
+/models/
+*.log
+/scratch/
+/output/
+/temp/
+*.md.bak
