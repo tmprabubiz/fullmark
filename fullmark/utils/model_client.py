@@ -62,6 +62,13 @@ class ModelClient:
 
     Reads all configuration from environment variables (loaded from ``.env``).
     Never raises — returns ``None`` if no provider is available.
+
+    Rate-limit handling
+    -------------------
+    When a provider returns a 429 / rate-limit / quota error, the client
+    waits ``PROVIDER_RETRY_DELAY`` seconds (default 5) and retries the same
+    provider up to ``PROVIDER_MAX_RETRIES`` times (default 2) before moving
+    to the next provider in the chain.
     """
 
     def __init__(self) -> None:
@@ -75,6 +82,8 @@ class ModelClient:
                 os.getenv("COMPILER_FALLBACK_1", "openrouter_free").lower(),
                 os.getenv("COMPILER_FALLBACK_2", "ollama").lower(),
             ]
+        self._retry_delay = float(os.getenv("PROVIDER_RETRY_DELAY", "5"))
+        self._max_retries = int(os.getenv("PROVIDER_MAX_RETRIES", "2"))
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -93,19 +102,56 @@ class ModelClient:
         """
         for provider in self._chain:
             logger.debug("Trying provider: %s", provider)
-            try:
-                result = self._dispatch(provider, prompt, system)
-                if result is not None:
-                    logger.debug("Provider %s succeeded", provider)
-                    return result
-            except Exception as exc:
-                logger.warning("Provider %r failed: %s", provider, exc)
+            result = self._try_with_retry(provider, prompt, system)
+            if result is not None:
+                return result
 
         if os.getenv("COMPILER_WARN_ON_LIMIT", "true").lower() == "true":
             logger.warning(
                 "No LLM provider succeeded. Output will use mechanical formatting. "
                 "Check your COMPILER_CHAIN and API keys in .env."
             )
+        return None
+
+    def _try_with_retry(
+        self, provider: str, prompt: str, system: str | None
+    ) -> Optional[str]:
+        """
+        Attempt *provider* up to (1 + PROVIDER_MAX_RETRIES) times.
+
+        On a rate-limit / 429 error, waits PROVIDER_RETRY_DELAY seconds and
+        retries the same provider. Any other exception moves to the next
+        provider immediately.
+        """
+        import time
+
+        attempts = 0
+        max_attempts = 1 + self._max_retries
+
+        while attempts < max_attempts:
+            try:
+                result = self._dispatch(provider, prompt, system)
+                if result is not None:
+                    logger.debug("Provider %s succeeded (attempt %d)", provider, attempts + 1)
+                    return result
+                return None  # Provider returned None (no key / not configured)
+            except Exception as exc:
+                exc_str = str(exc).lower()
+                is_ratelimit = any(
+                    kw in exc_str for kw in ("429", "rate limit", "rate_limit", "quota", "too many requests")
+                )
+                attempts += 1
+                if is_ratelimit and attempts < max_attempts:
+                    wait = self._retry_delay * attempts  # exponential: 5s, 10s
+                    logger.warning(
+                        "Provider %r rate-limited (attempt %d/%d) — waiting %.0fs",
+                        provider, attempts, max_attempts, wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.warning("Provider %r failed: %s", provider, exc)
+                    return None
+
         return None
 
     def describe_image(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> Optional[str]:
@@ -143,15 +189,46 @@ class ModelClient:
 
         for provider in vision_chain:
             logger.debug("Trying vision provider: %s", provider)
+            result = self._try_vision_with_retry(provider, data_uri, mime_type, system)
+            if result is not None:
+                return result
+
+        logger.warning("No vision LLM provider succeeded — will use base64 embedding fallback")
+        return None
+
+    def _try_vision_with_retry(
+        self, provider: str, data_uri: str, mime_type: str, system: str | None
+    ) -> Optional[str]:
+        """Attempt vision call with rate-limit retry logic."""
+        import time
+
+        attempts = 0
+        max_attempts = 1 + self._max_retries
+
+        while attempts < max_attempts:
             try:
                 result = self._dispatch_vision(provider, data_uri, mime_type, system)
                 if result is not None:
-                    logger.debug("Vision provider %s succeeded", provider)
+                    logger.debug("Vision provider %s succeeded (attempt %d)", provider, attempts + 1)
                     return result
+                return None
             except Exception as exc:
-                logger.warning("Vision provider %r failed: %s", provider, exc)
+                exc_str = str(exc).lower()
+                is_ratelimit = any(
+                    kw in exc_str for kw in ("429", "rate limit", "rate_limit", "quota", "too many requests")
+                )
+                attempts += 1
+                if is_ratelimit and attempts < max_attempts:
+                    wait = self._retry_delay * attempts
+                    logger.warning(
+                        "Vision provider %r rate-limited (attempt %d/%d) — waiting %.0fs",
+                        provider, attempts, max_attempts, wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.warning("Vision provider %r failed: %s", provider, exc)
+                    return None
 
-        logger.warning("No vision LLM provider succeeded — will use base64 embedding fallback")
         return None
 
     # ──────────────────────────────────────────────────────────────────────────

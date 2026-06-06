@@ -230,9 +230,64 @@ def unpack_zip(zip_path: Path) -> tuple[Path, list[Path]]:
     return temp_dir, extracted
 
 
+def url_to_output_name(url: str) -> str:
+    """
+    Convert a URL to the FullMark naming convention:
+    ``<3-letter-domain-prefix>_<path-seg-1>_<path-seg-2>_...``
+
+    Args:
+        url: HTTP/HTTPS URL string.
+
+    Returns:
+        A safe filename stem (no extension, no path separators).
+
+    Examples::
+
+        https://example.com/docs/api/auth  →  ``exa_docs_api_auth``
+        https://docs.python.org/3/library/os.html  →  ``doc_3_library_os``
+        https://example.com  →  ``exa``
+        https://en.wikipedia.org/wiki/Python  →  ``en__wiki_Python``
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+
+    # Domain prefix: first ≤3 alphanumeric chars of netloc (strip www.)
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    domain_clean = re.sub(r"[^a-z0-9]", "", domain)
+    domain_prefix = domain_clean[:3] or "url"
+
+    # Path segments: split on /, sanitise each, strip file extension from last
+    path = parsed.path.rstrip("/")
+    segments: list[str] = []
+    if path:
+        for seg in path.split("/"):
+            if not seg:
+                continue
+            # Strip file extension from last segment (e.g. .html, .php)
+            seg_clean = re.sub(r"\.[a-zA-Z0-9]{1,6}$", "", seg)
+            # Keep alphanumerics, hyphens, underscores; truncate to 25 chars
+            seg_safe = re.sub(r"[^\w-]", "_", seg_clean)[:25].strip("_")
+            if seg_safe:
+                segments.append(seg_safe)
+
+    parts = [domain_prefix] + segments
+    name = "_".join(parts)
+    # Collapse repeated underscores, strip leading/trailing
+    name = re.sub(r"_+", "_", name).strip("_")
+    return name[:80] or "page"
+
+
 def safe_output_path(source: str | Path, output_dir: Path, suffix: str = ".md") -> Path:
     """
     Compute a safe output path for *source* inside *output_dir*.
+
+    For URLs applies the FullMark naming convention:
+    ``<3-letter-domain>_<path-seg-1>_<path-seg-2>...``
+
+    For file paths uses the stem of the filename.
 
     Args:
         source: Original source path or URL.
@@ -244,14 +299,10 @@ def safe_output_path(source: str | Path, output_dir: Path, suffix: str = ".md") 
     """
     source_str = str(source)
     if source_str.startswith(("http://", "https://")):
-        # Derive stem from URL
-        from urllib.parse import urlparse
-        parsed = urlparse(source_str)
-        stem = Path(parsed.path).stem or parsed.netloc.replace(".", "_")
+        stem = url_to_output_name(source_str)
     else:
         stem = Path(source_str).stem
+        # Sanitise: keep alphanumeric, dash, underscore
+        stem = re.sub(r"[^\w-]", "_", stem).strip("_") or "output"
 
-    # Sanitise stem — keep alphanumeric, dash, underscore, dot
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem)
-    safe = safe.strip("._") or "output"
-    return output_dir / (safe + suffix)
+    return output_dir / (stem + suffix)

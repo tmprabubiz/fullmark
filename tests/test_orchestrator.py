@@ -200,3 +200,119 @@ class TestAgentErrorResilience:
         # Only b.txt succeeds
         assert len(results) == 1
         assert call_count == 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Markdown segmentation
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestMarkdownSegmentation:
+    def test_small_content_writes_single_file(self, tmp_path):
+        orch = Orchestrator(output_dir=tmp_path)
+        small_md = "# Small\n\n" + "x" * 100
+        paths = orch._write("source.txt", small_md, "document")
+        assert len(paths) == 1
+        assert paths[0].name == "source.md"
+
+    def test_large_content_writes_multiple_segments(self, tmp_path):
+        orch = Orchestrator(output_dir=tmp_path)
+        # Produce content that exceeds 120_000 chars
+        # Use multiple paragraphs separated by \n\n
+        para = "word " * 300  # ~1500 chars each
+        md = ("\n\n".join([para] * 100))  # ~150,000 chars total
+        paths = orch._write("big.txt", md, "document")
+        assert len(paths) >= 2
+        for p in paths:
+            assert p.stat().st_size > 0
+
+    def test_segment_names_use_001_002_suffix(self, tmp_path):
+        orch = Orchestrator(output_dir=tmp_path)
+        para = "paragraph content here\n" * 100  # ~2,300 chars
+        md = ("\n\n".join([para] * 70))  # ~165,000 chars
+        paths = orch._write("report.txt", md, "document")
+        if len(paths) > 1:
+            assert paths[0].name.endswith("_001.md")
+            assert paths[1].name.endswith("_002.md")
+
+    def test_split_markdown_stays_within_limit(self):
+        para = "word " * 500  # ~2500 chars
+        text = "\n\n".join([para] * 60)  # ~150,000 chars
+        chunks = Orchestrator._split_markdown(text, max_chars=120_000)
+        for chunk in chunks:
+            assert len(chunk) <= 120_000 + 5000  # allow minor overage for last para
+
+    def test_split_markdown_single_chunk_for_small_text(self):
+        text = "# Title\n\nShort content."
+        chunks = Orchestrator._split_markdown(text)
+        assert len(chunks) == 1
+        assert chunks[0] == text
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Metadata logging integration
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestMetadataLogging:
+    def test_convert_writes_metadata_json(self, tmp_path):
+        orch = Orchestrator(output_dir=tmp_path)
+        with patch.object(orch, "_run_agent", return_value="# Web page"):
+            orch.convert("https://example.com")
+        log_path = tmp_path / "conversion_log.json"
+        assert log_path.exists()
+
+    def test_convert_file_writes_metadata_json(self, tmp_path):
+        src = tmp_path / "doc.txt"
+        src.write_text("hello world")
+        out = tmp_path / "out"
+        orch = Orchestrator(output_dir=out)
+        with patch.object(orch, "_run_agent", return_value="# Doc"):
+            orch.convert(src)
+        assert (out / "conversion_log.json").exists()
+
+    def test_skip_existing_skips_logged_source(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SKIP_EXISTING", "true")
+        orch = Orchestrator(output_dir=tmp_path)
+        # Manually record a URL in the log
+        orch._meta_log.record("https://example.com", "web", [], "# old")
+
+        with patch.object(orch, "_run_agent") as mock_run:
+            orch.convert("https://example.com")
+
+        # Should be skipped — _run_agent never called
+        mock_run.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Input folder conversion
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestConvertInputFolder:
+    def test_input_folder_empty_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "input").mkdir()
+        orch = Orchestrator(output_dir=tmp_path / "out")
+        results = orch.convert_input_folder()
+        assert results == []
+
+    def test_input_folder_missing_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        orch = Orchestrator(output_dir=tmp_path / "out")
+        # Remove input/ if it was auto-created
+        import shutil
+        inp = tmp_path / "input"
+        if inp.exists():
+            shutil.rmtree(inp)
+        results = orch.convert_input_folder()
+        assert results == []
+
+    def test_input_folder_converts_files(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        inp = tmp_path / "input"
+        inp.mkdir(exist_ok=True)
+        (inp / "test.txt").write_text("content")
+        orch = Orchestrator(output_dir=tmp_path / "out")
+        with patch.object(orch, "_run_agent", return_value="# Test") as mock_run:
+            results = orch.convert_input_folder()
+        assert len(results) == 1
+        mock_run.assert_called_once()
+

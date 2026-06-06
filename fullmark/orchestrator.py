@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from fullmark import AgentError
 from fullmark.utils.file_utils import detect_agent, unpack_zip, safe_output_path, is_url_list_file
+from fullmark.utils.metadata_logger import MetadataLogger
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -29,10 +30,15 @@ class Orchestrator:
         output_dir: Directory where converted ``.md`` files are written.
     """
 
+    _MAX_FILE_CHARS: int = 120_000
+
     def __init__(self, output_dir: str | Path | None = None) -> None:
         default = os.getenv("OUTPUT_DIR", "./output")
         self.output_dir = Path(output_dir or default)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Always ensure input/ folder exists alongside output/
+        Path("input").mkdir(exist_ok=True)
+        self._meta_log = MetadataLogger(self.output_dir)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -53,10 +59,13 @@ class Orchestrator:
 
         # URL
         if source_str.startswith(("http://", "https://")):
+            if self._should_skip(source_str):
+                return results
             md = self._run_agent("web", source_str)
             if md:
                 results.append((source_str, md))
-                self._write(source_str, md)
+                self._write(source_str, md, "web")
+            self._meta_log.write_summary()
             return results
 
         path = Path(source_str)
@@ -68,12 +77,14 @@ class Orchestrator:
                     result = self._convert_file(child)
                     if result:
                         results.append(result)
+            self._meta_log.write_summary()
             return results
 
         # Single file
         result = self._convert_file(path)
         if result:
             results.append(result)
+        self._meta_log.write_summary()
         return results
 
     def convert_file(self, path: Path) -> str:
@@ -99,6 +110,9 @@ class Orchestrator:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _convert_file(self, path: Path) -> tuple[str, str] | None:
+        if self._should_skip(str(path)):
+            return None
+
         # Check for URL-list files before normal agent routing
         if is_url_list_file(path):
             logger.info("routing %s → UrlListAgent (URL-list file)", path.name)
@@ -108,7 +122,7 @@ class Orchestrator:
                 logger.error("UrlListAgent failed on %s: %s", path, exc)
                 return None
             if md:
-                self._write(str(path), md)
+                self._write(str(path), md, "url_list")
                 return (str(path), md)
             return None
 
@@ -129,7 +143,7 @@ class Orchestrator:
             return None
 
         if md:
-            self._write(str(path), md)
+            self._write(str(path), md, agent_name)
             return (str(path), md)
         return None
 
@@ -152,7 +166,7 @@ class Orchestrator:
                     logger.error("Failed to convert archive entry %s: %s", entry.name, exc)
 
             combined = "\n".join(parts)
-            self._write(str(zip_path), combined)
+            self._write(str(zip_path), combined, "archive")
             return (str(zip_path), combined)
         finally:
             if temp_dir and temp_dir.exists():
@@ -177,9 +191,109 @@ class Orchestrator:
             return UrlListAgent().convert(source)
         return None
 
-    def _write(self, source: str, markdown: str) -> None:
-        """Write *markdown* to the appropriate output file."""
-        out_path = safe_output_path(source, self.output_dir)
-        out_path.write_text(markdown, encoding="utf-8")
-        kb = len(markdown.encode()) / 1024
-        logger.info("wrote %s (%.1f KB)", out_path, kb)
+    def _write(self, source: str, markdown: str, agent_name: str = "unknown") -> list[Path]:
+        """
+        Write *markdown* to output file(s).
+
+        If ``len(markdown) <= _MAX_FILE_CHARS``, writes a single ``.md`` file.
+        Otherwise splits at paragraph boundaries and writes
+        ``stem_001.md``, ``stem_002.md`` etc.
+
+        Returns:
+            List of Paths written.
+        """
+        base_path = safe_output_path(source, self.output_dir)
+        stem = base_path.stem
+        chunks = self._split_markdown(markdown)
+
+        if len(chunks) == 1:
+            base_path.write_text(chunks[0], encoding="utf-8")
+            kb = len(chunks[0].encode()) / 1024
+            logger.info("wrote %s (%.1f KB)", base_path, kb)
+            written = [base_path]
+        else:
+            written = []
+            for i, chunk in enumerate(chunks, start=1):
+                seg_path = self.output_dir / f"{stem}_{i:03d}.md"
+                seg_path.write_text(chunk, encoding="utf-8")
+                kb = len(chunk.encode()) / 1024
+                logger.info("wrote %s (%.1f KB)", seg_path, kb)
+                written.append(seg_path)
+
+        self._meta_log.record(
+            source=source,
+            agent=agent_name,
+            output_files=[str(p) for p in written],
+            markdown=markdown,
+        )
+        return written
+
+    @staticmethod
+    def _split_markdown(text: str, max_chars: int = _MAX_FILE_CHARS) -> list[str]:
+        """
+        Split *text* into chunks of at most *max_chars*, breaking at paragraph
+        boundaries (double newlines) where possible.
+
+        Args:
+            text: Full Markdown text.
+            max_chars: Maximum character count per chunk.
+
+        Returns:
+            List of text chunks.
+        """
+        if len(text) <= max_chars:
+            return [text]
+
+        paragraphs = text.split("\n\n")
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for para in paragraphs:
+            para_len = len(para) + 2  # account for the \n\n we'll rejoin with
+            if current and current_len + para_len > max_chars:
+                chunks.append("\n\n".join(current))
+                current = [para]
+                current_len = para_len
+            else:
+                current.append(para)
+                current_len += para_len
+
+        if current:
+            chunks.append("\n\n".join(current))
+
+        return chunks or [text]
+
+    def _should_skip(self, source: str) -> bool:
+        """Return True if SKIP_EXISTING is set and *source* is already logged."""
+        if os.getenv("SKIP_EXISTING", "").lower() in ("1", "true", "yes"):
+            if self._meta_log.already_converted(source):
+                logger.info("Skipping already-converted source: %s", source)
+                return True
+        return False
+
+    def convert_input_folder(self) -> list[tuple[str, str]]:
+        """
+        Scan the ``input/`` folder in the current directory and convert all files.
+
+        Returns:
+            List of (source_path, markdown) tuples.
+        """
+        input_dir = Path("input")
+        if not input_dir.exists() or not input_dir.is_dir():
+            logger.warning("input/ folder not found")
+            return []
+
+        files = sorted(f for f in input_dir.rglob("*") if f.is_file())
+        if not files:
+            logger.info("input/ folder is empty — nothing to convert")
+            return []
+
+        results: list[tuple[str, str]] = []
+        for f in files:
+            result = self._convert_file(f)
+            if result:
+                results.append(result)
+
+        self._meta_log.write_summary()
+        return results
