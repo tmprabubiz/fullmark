@@ -225,5 +225,18 @@ __marimo__/
 *.log
 /scratch/
 /output/
+/input/
 /temp/
 *.md.bak
+
+# FullMark — working/session files
+HANDOFF.md
+HANDOFF*.md
+SCRATCH.md
+SCRATCH*.md
+NOTES.md
+TODO.md
+SESSION*.md
+*_HANDOFF.md
+*_NOTES.md
+*.session.md
