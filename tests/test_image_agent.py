@@ -200,3 +200,42 @@ class TestVisionFallback:
              patch.object(ImageAgent, "_exif_meta", return_value=None):
             result = _agent().convert(f)
         assert "Chart" in result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SVG vision fallback
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestSvgVisionFallback:
+    def test_empty_svg_tries_vision_fallback(self, tmp_path):
+        """SVG with no text/shapes should call _svg_vision_fallback."""
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        f = tmp_path / "empty.svg"
+        f.write_text(svg)
+        with patch.object(ImageAgent, "_svg_vision_fallback", return_value="A blank canvas.") as mock_vis, \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        mock_vis.assert_called_once()
+        assert "A blank canvas." in result
+
+    def test_empty_svg_placeholder_when_vision_unavailable(self, tmp_path):
+        """SVG with no content and no vision LLM → informative placeholder."""
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        f = tmp_path / "empty.svg"
+        f.write_text(svg)
+        with patch.object(ImageAgent, "_svg_vision_fallback", return_value=""), \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        # Should not raise; should contain the filename
+        assert "empty.svg" in result
+
+    def test_svg_with_text_skips_vision(self, tmp_path):
+        """SVG that has text content should not call vision fallback."""
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>Hello</text></svg>'
+        f = tmp_path / "text.svg"
+        f.write_text(svg)
+        with patch.object(ImageAgent, "_svg_vision_fallback") as mock_vis, \
+             patch.object(ImageAgent, "_exif_meta", return_value=None):
+            result = _agent().convert(f)
+        mock_vis.assert_not_called()
+        assert "Hello" in result

@@ -226,3 +226,42 @@ class TestSectionHeadings:
             result = _agent().convert(f)
         # Body starts with # so no ## Word Document: wrapper
         assert "## Word Document:" not in result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Legacy format fallbacks
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestLegacyFormats:
+    def test_doc_graceful_message_when_python_docx_fails(self, tmp_path):
+        f = tmp_path / "legacy.doc"
+        f.write_bytes(b"\xd0\xcf\x11\xe0fake ole content")  # OLE magic bytes
+        with patch("docx.Document", side_effect=Exception("Not a valid package")), \
+             patch.object(DocumentAgent, "_doc_antiword", return_value=""):
+            result = _agent().convert(f)
+        # Should not raise — should return graceful message
+        assert "legacy" in result.lower() or "doc" in result.lower() or "convert" in result.lower()
+        assert "---" in result  # has front matter
+
+    def test_doc_antiword_text_used_when_available(self, tmp_path):
+        f = tmp_path / "legacy.doc"
+        f.write_bytes(b"\xd0\xcf\x11\xe0fake")
+        with patch("docx.Document", side_effect=Exception("bad format")), \
+             patch.object(DocumentAgent, "_doc_antiword", return_value="Extracted antiword text"):
+            result = _agent().convert(f)
+        assert "Extracted antiword text" in result
+
+    def test_xls_graceful_message_when_xlrd_missing(self, tmp_path):
+        f = tmp_path / "data.xls"
+        f.write_bytes(b"\xd0\xcf\x11\xe0fake xls")
+        with patch.object(DocumentAgent, "_xls_xlrd", return_value=""):
+            result = _agent().convert(f)
+        assert "---" in result  # has front matter
+        assert "xls" in result.lower() or "spreadsheet" in result.lower()
+
+    def test_xls_content_used_when_xlrd_works(self, tmp_path):
+        f = tmp_path / "data.xls"
+        f.write_bytes(b"\xd0\xcf\x11\xe0fake xls")
+        with patch.object(DocumentAgent, "_xls_xlrd", return_value="## Sheet: Sheet1\n\n| A | B |\n|---|---|\n| 1 | 2 |"):
+            result = _agent().convert(f)
+        assert "Sheet1" in result

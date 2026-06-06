@@ -158,7 +158,8 @@ def main() -> None:
     print(f"\n{BOLD}Image Agent{RESET}")
     results.append(check_package("Pillow", "PIL"))
     results.append(check_package("pytesseract"))
-    check_package("easyocr", required=False)  # optional fallback
+    check_package("easyocr", required=False)          # optional fallback OCR
+    check_package("cairosvg", required=False)          # optional — SVG → PNG rasteriser for vision LLM
 
     # ── Video Agent packages ─────────────────────────────────────────────────
     print(f"\n{BOLD}Video Agent{RESET}")
@@ -169,8 +170,15 @@ def main() -> None:
     # ── Compiler / LLM packages ──────────────────────────────────────────────
     print(f"\n{BOLD}Compiler / LLM{RESET}")
     results.append(check_package("openai"))
-    check_package("google-generativeai", "google.generativeai", required=False)
+    check_package("google-genai", "google.genai", required=False)          # new Gemini SDK
+    check_package("google-generativeai", "google.generativeai", required=False)  # legacy fallback
+    check_package("anthropic", required=False)
     check_package("ollama", required=False)
+
+    # ── Optional document extras ─────────────────────────────────────────────
+    print(f"\n{BOLD}Optional Document Extras{RESET}")
+    check_package("pymupdf", "fitz", required=False)   # scanned PDF OCR
+    check_package("xlrd", required=False)              # legacy .xls files
 
     # ── Summary ──────────────────────────────────────────────────────────────
     go_count  = sum(1 for r in results if r)

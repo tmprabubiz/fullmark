@@ -245,7 +245,6 @@ class ModelClient:
         except ImportError:
             logger.debug("Neither google-genai nor google-generativeai installed — skipping Gemini")
             return None
-        return None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Anthropic (anthropic SDK)

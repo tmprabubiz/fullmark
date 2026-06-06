@@ -69,6 +69,8 @@ def main(source: str, output: str | None, whisper_model: str | None, verbose: bo
       Video     : MP4 AVI MOV MKV WEBM
       Audio     : MP3 WAV M4A
       Archives  : ZIP
+      URL Lists : TXT / DOCX / XLSX / CSV files containing one URL per line/cell
+                  (valid URLs are fetched; non-URL lines are reported as skipped)
     """
     _setup_logging(verbose)
     log = logging.getLogger("fullmark.cli")

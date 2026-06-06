@@ -188,6 +188,20 @@ class DocumentAgent:
         try:
             doc = Document(str(path))
         except Exception as exc:
+            # python-docx cannot read legacy binary .doc (OLE format)
+            if path.suffix.lower() == ".doc":
+                logger.warning("Cannot open %s with python-docx (legacy .doc format). "
+                               "Convert to .docx with LibreOffice or Word first.", path.name)
+                # Try antiword system binary as a best-effort fallback
+                text = self._doc_antiword(path)
+                if text.strip():
+                    return clean_text(text)
+                return (
+                    f"## Legacy .doc: {path.name}\n\n"
+                    f"> **Note:** This file is in legacy binary `.doc` format which cannot be "
+                    f"read directly. Convert to `.docx` format to extract content.\n\n"
+                    f"*No text extracted.*"
+                )
             raise AgentError(f"Cannot open DOCX {path.name}: {exc}") from exc
 
         parts: list[str] = []
@@ -220,6 +234,22 @@ class DocumentAgent:
     # ──────────────────────────────────────────────────────────────────────────
     # RTF
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _doc_antiword(self, path: Path) -> str:
+        """Try to extract text from a legacy .doc using the `antiword` system binary."""
+        import shutil
+        import subprocess
+        if not shutil.which("antiword"):
+            return ""
+        try:
+            result = subprocess.run(
+                ["antiword", str(path)], capture_output=True, timeout=30
+            )
+            if result.returncode == 0:
+                return result.stdout.decode(errors="replace")
+        except Exception as exc:
+            logger.debug("antiword failed: %s", exc)
+        return ""
 
     def _convert_rtf(self, path: Path) -> str:
         try:
@@ -272,6 +302,20 @@ class DocumentAgent:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _convert_xlsx(self, path: Path) -> str:
+        ext = path.suffix.lower()
+
+        # Legacy .xls — try xlrd first, openpyxl can't read it
+        if ext == ".xls":
+            text = self._xls_xlrd(path)
+            if text:
+                return text
+            return (
+                f"## Legacy Spreadsheet: {path.name}\n\n"
+                f"> **Note:** `.xls` format requires the `xlrd` package "
+                f"(`pip install xlrd`). Install it to extract content.\n\n"
+                f"*No data extracted.*"
+            )
+
         try:
             import openpyxl  # type: ignore
         except ImportError:
@@ -301,6 +345,31 @@ class DocumentAgent:
     # ──────────────────────────────────────────────────────────────────────────
     # CSV
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _xls_xlrd(self, path: Path) -> str:
+        """Try to read a legacy .xls file using xlrd. Returns empty string if unavailable."""
+        try:
+            import xlrd  # type: ignore
+        except ImportError:
+            logger.debug("xlrd not installed — cannot read .xls (pip install xlrd)")
+            return ""
+        try:
+            wb = xlrd.open_workbook(str(path))
+        except Exception as exc:
+            logger.warning("xlrd failed on %s: %s", path.name, exc)
+            return ""
+
+        parts: list[str] = []
+        for sheet in wb.sheets():
+            parts.append(heading(f"Sheet: {sheet.name}", 2))
+            if sheet.nrows == 0:
+                continue
+            headers = [str(sheet.cell_value(0, c)) for c in range(sheet.ncols)]
+            rows: list[list[str]] = []
+            for r in range(1, sheet.nrows):
+                rows.append([str(sheet.cell_value(r, c)) for c in range(sheet.ncols)])
+            parts.append(rows_to_gfm_table(headers, rows))
+        return "\n\n".join(parts)
 
     def _convert_csv(self, path: Path) -> str:
         raw = path.read_text(encoding="utf-8", errors="replace")

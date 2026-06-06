@@ -230,13 +230,71 @@ class ImageAgent:
             if mermaid:
                 return f"{heading('Diagram', 2)}\n\n```mermaid\n{mermaid}\n```"
 
-        # Fallback: extract all text elements
+        # Fallback 1: extract all text elements
         texts = self._svg_extract_text(path)
         if texts:
             bullets = "\n".join(f"- {t}" for t in texts)
             return f"{heading('SVG Text Content', 2)}\n\n{bullets}"
 
-        return f"*SVG diagram: {path.name}*"
+        # Fallback 2: vision LLM — rasterise SVG and describe it
+        logger.debug("SVG has no parseable structure in %s — trying vision LLM", path.name)
+        vision_md = self._svg_vision_fallback(path)
+        if vision_md:
+            return f"## SVG Visual Description\n\n{vision_md}"
+
+        return f"*SVG diagram: {path.name} — no text or parseable structure detected*"
+
+    def _svg_vision_fallback(self, path: Path) -> str:
+        """
+        Rasterise SVG to PNG via cairosvg or Inkscape, then run vision LLM.
+        Returns empty string if neither tool is available.
+        """
+        import io as _io
+        import shutil
+
+        image_bytes: bytes | None = None
+
+        # Try cairosvg (Python library — preferred)
+        try:
+            import cairosvg  # type: ignore
+            image_bytes = cairosvg.svg2png(url=str(path))
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug("cairosvg failed on %s: %s", path.name, exc)
+
+        # Try Inkscape CLI fallback
+        if image_bytes is None and shutil.which("inkscape"):
+            import subprocess, tempfile
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                result = subprocess.run(
+                    ["inkscape", str(path), "--export-filename", tmp_path],
+                    capture_output=True, timeout=30,
+                )
+                if result.returncode == 0:
+                    image_bytes = Path(tmp_path).read_bytes()
+            except Exception as exc:
+                logger.debug("Inkscape failed on %s: %s", path.name, exc)
+            finally:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        if not image_bytes:
+            logger.debug("Cannot rasterise SVG %s — no cairosvg or Inkscape available", path.name)
+            return ""
+
+        try:
+            from fullmark.utils.model_client import ModelClient
+            client = ModelClient()
+            return client.describe_image(image_bytes, mime_type="image/png") or ""
+        except Exception as exc:
+            logger.debug("Vision LLM for SVG %s failed: %s", path.name, exc)
+            return ""
 
     def _svg_to_mermaid(self, path: Path) -> str:
         """
