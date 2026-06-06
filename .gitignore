@@ -233,6 +233,10 @@ __marimo__/
 HANDOFF.md
 HANDOFF*.md
 AGENTS.md
+
+# Personal / non-public files
+generate_session_log.py
+For-You_TMP*.md
 CLAUDE.md
 WORKFLOW.md
 SCRATCH.md
