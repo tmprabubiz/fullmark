@@ -39,6 +39,58 @@ def front_matter(source: str, agent: str, extra: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+def inject_source_id(markdown: str, source_id: str) -> str:
+    """
+    Insert ``source_id: <id>`` into an existing YAML front matter block.
+
+    If no front matter is present the markdown is returned unchanged.
+
+    Args:
+        markdown: Full Markdown string (may start with ``---``).
+        source_id: Value to insert, e.g. ``fm-6b25fc7ac59d6c4f``.
+
+    Returns:
+        Markdown string with ``source_id`` added to front matter.
+    """
+    if not markdown.startswith("---"):
+        return markdown
+    # Find the closing --- of the front matter
+    end = markdown.find("\n---", 3)
+    if end == -1:
+        return markdown
+    fm_block = markdown[:end]
+    rest = markdown[end:]
+    if "source_id:" not in fm_block:
+        fm_block = fm_block + f"\nsource_id: {source_id}"
+    return fm_block + rest
+
+
+def append_footnote(markdown: str, source: str, source_id: str) -> str:
+    """
+    Append a FullMark provenance footnote to *markdown*.
+
+    The footnote is a single italicised line that travels with the document:
+
+        ---
+        *Converted by [FullMark](…) · source: `<url>` · id: `fm-<hash>`*
+
+    Args:
+        markdown: Full Markdown string.
+        source: Original source path or URL.
+        source_id: The ``fm-<hash>`` unique identifier.
+
+    Returns:
+        Markdown string with footnote appended.
+    """
+    footnote = (
+        "\n\n---\n"
+        f"*Converted by [FullMark](https://github.com/tmprabubiz/fullmark)"
+        f" · source: `{source}`"
+        f" · id: `{source_id}`*"
+    )
+    return markdown.rstrip() + footnote
+
+
 def image_to_base64(path: Path, mime: str = "image/jpeg") -> str:
     """
     Encode an image file as a base64 data URI for embedding in Markdown.

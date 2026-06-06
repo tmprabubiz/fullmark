@@ -226,6 +226,16 @@ class Orchestrator:
         stem = base_path.stem
         chunks = self._split_markdown(markdown)
 
+        # Compute stable source identity for front matter injection + footnote
+        from fullmark.utils.metadata_logger import MetadataLogger as _ML
+        from fullmark.utils.markdown_utils import inject_source_id, append_footnote
+        source_id = _ML.compute_source_id(source)
+
+        # Inject source_id into the first chunk's front matter
+        chunks[0] = inject_source_id(chunks[0], source_id)
+        # Append provenance footnote to the last chunk
+        chunks[-1] = append_footnote(chunks[-1], source, source_id)
+
         # Multi-segment outputs and web conversions (which have companion images)
         # go into a dedicated subfolder: output/<stem>/
         use_subfolder = len(chunks) > 1 or agent_name == "web"
@@ -299,11 +309,12 @@ class Orchestrator:
         return chunks or [text]
 
     def _should_skip(self, source: str) -> bool:
-        """Return True if SKIP_EXISTING is set and *source* is already logged."""
-        if os.getenv("SKIP_EXISTING", "").lower() in ("1", "true", "yes"):
-            if self._meta_log.already_converted(source):
-                logger.info("Skipping already-converted source: %s", source)
-                return True
+        """Return True if *source* is already logged, unless FORCE_RECONVERT is set."""
+        if os.getenv("FORCE_RECONVERT", "").lower() in ("1", "true", "yes"):
+            return False
+        if self._meta_log.already_converted(source):
+            logger.info("Skipping already-converted source: %s", source)
+            return True
         return False
 
     def convert_input_folder(self) -> list[tuple[str, str]]:

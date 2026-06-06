@@ -73,9 +73,11 @@ class MetadataLogger:
         char_count = len(markdown)
         token_estimate = char_count // _CHARS_PER_TOKEN
         content_hash = self._compute_hash(source)
+        source_id = "fm-" + content_hash
 
         entry: dict = {
             "source": source,
+            "source_id": source_id,
             "agent": agent,
             "converted": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "output_files": [str(p) for p in output_files],
@@ -109,7 +111,8 @@ class MetadataLogger:
             Most recent log entry dict, or ``None``.
         """
         content_hash = self._compute_hash(source)
-        matches = [e for e in self._entries if e.get("content_hash") == content_hash]
+        matches = [e for e in self._entries if e.get("content_hash") == content_hash
+                   or e.get("source_id") == "fm-" + content_hash]
         return matches[-1] if matches else None
 
     def write_summary(self) -> Path:
@@ -138,20 +141,21 @@ class MetadataLogger:
             f"**Total characters:** {total_chars:,}  ",
             f"**Estimated tokens:** ~{total_tokens:,}",
             "",
-            "| # | Source | Agent | Segs | Chars | ~Tokens | Date |",
-            "|---|--------|-------|------|-------|---------|------|",
+            "| # | Source | ID | Agent | Segs | Chars | ~Tokens | Date |",
+            "|---|--------|-----|-------|------|-------|---------|------|",
         ]
 
         for i, e in enumerate(self._entries, 1):
             src = str(e.get("source", ""))
             # Truncate long sources for readability
-            src_display = (src[:55] + "…") if len(src) > 55 else src
+            src_display = (src[:50] + "…") if len(src) > 50 else src
+            sid = e.get("source_id", e.get("content_hash", ""))[:10]
             agent = e.get("agent", "")
             segs = e.get("segments", 1)
             chars = f"{e.get('char_count', 0):,}"
             tokens = f"~{e.get('token_estimate', 0):,}"
             ts = e.get("converted", "")[:10]
-            lines.append(f"| {i} | `{src_display}` | {agent} | {segs} | {chars} | {tokens} | {ts} |")
+            lines.append(f"| {i} | `{src_display}` | `{sid}` | {agent} | {segs} | {chars} | {tokens} | {ts} |")
 
         lines.extend([
             "",
@@ -219,14 +223,59 @@ class MetadataLogger:
         """
         Compute a stable 16-char hex identifier for *source*.
 
-        For existing files: SHA256 of the first 512 KB of file contents.
-        For URLs or missing paths: SHA256 of the source string itself.
+        Identity rules by type
+        ----------------------
+        URL (http/https)
+            SHA256 of the *normalised* URL string.
+            Normalisation: lowercase scheme + netloc, strip trailing ``/``,
+            strip ``.git`` suffix, remove tracking query params
+            (``utm_*``, ``fbclid``, ``gclid``, ``ref``, ``source``).
+
+        Local file < 10 MB
+            SHA256 of the full file bytes — detects same file under a
+            different name; covers PDF, DOCX, XLSX, PPTX, images, etc.
+
+        Local file ≥ 10 MB (video / audio)
+            SHA256 of the first 4 MB — strong fingerprint without reading
+            the whole file for large media.
         """
+        _TRACKING_PARAMS = frozenset({
+            "utm_source", "utm_medium", "utm_campaign", "utm_term",
+            "utm_content", "fbclid", "gclid", "ref", "source",
+        })
+        _10MB = 10 * 1024 * 1024
+        _4MB  =  4 * 1024 * 1024
+
+        if source.startswith(("http://", "https://")):
+            from urllib.parse import urlparse, urlencode, parse_qsl
+            p = urlparse(source)
+            normalised_path = p.path.rstrip("/").removesuffix(".git")
+            filtered_qs = urlencode(
+                [(k, v) for k, v in parse_qsl(p.query)
+                 if k.lower() not in _TRACKING_PARAMS]
+            )
+            normalised = p._replace(
+                scheme=p.scheme.lower(),
+                netloc=p.netloc.lower(),
+                path=normalised_path,
+                query=filtered_qs,
+                fragment="",
+            ).geturl()
+            return hashlib.sha256(normalised.encode()).hexdigest()[:16]
+
         path = Path(source)
-        if not source.startswith(("http://", "https://")) and path.exists() and path.is_file():
+        if path.exists() and path.is_file():
             try:
-                data = path.read_bytes()[:524288]  # first 512 KB
+                size = path.stat().st_size
+                with path.open("rb") as fh:
+                    data = fh.read(_4MB if size >= _10MB else size)
                 return hashlib.sha256(data).hexdigest()[:16]
             except Exception:
                 pass
+
         return hashlib.sha256(source.encode()).hexdigest()[:16]
+
+    @classmethod
+    def compute_source_id(cls, source: str) -> str:
+        """Return the canonical ``fm-<hash>`` identifier for *source*."""
+        return "fm-" + cls._compute_hash(source)

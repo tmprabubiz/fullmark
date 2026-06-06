@@ -14,7 +14,7 @@ Examples:
     python fullmark_cli.py ./docs/ --output ./output
     python fullmark_cli.py archive.zip
     python fullmark_cli.py https://example.com/docs --follow-links --crawl-depth 2
-    python fullmark_cli.py --skip-existing      # re-runs but skips already-done files
+    python fullmark_cli.py --force              # reconvert even if already in the log
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _prompt_follow_links(
             click.echo(
                 "\n\u26a0  Large crawl detected. Consider running overnight to avoid\n"
                 "   token-rate limits. Use --crawl-delay 5 or higher. "
-                "Add --skip-existing to resume if interrupted.",
+                "Interrupted runs resume automatically (already-converted sources are skipped).",
                 err=True,
             )
         if not click.confirm("Proceed with crawl?", default=True):
@@ -161,10 +161,10 @@ def _prompt_follow_links(
     type=int,
 )
 @click.option(
-    "--skip-existing",
+    "--force", "-f",
     is_flag=True,
     default=False,
-    help="Skip sources already recorded in conversion_log.json.",
+    help="Reconvert even if the source is already recorded in conversion_log.json.",
 )
 @click.version_option(version="1.0.0", prog_name="FullMark")
 def main(
@@ -176,7 +176,7 @@ def main(
     crawl_depth: int,
     crawl_delay: float,
     max_pages: int,
-    skip_existing: bool,
+    force: bool,
 ) -> None:
     """FullMark — Convert ANY source format into a perfect Markdown file.
 
@@ -205,8 +205,8 @@ def main(
         os.environ["OUTPUT_DIR"] = output
     if whisper_model:
         os.environ["WHISPER_MODEL"] = whisper_model
-    if skip_existing:
-        os.environ["SKIP_EXISTING"] = "true"
+    if force:
+        os.environ["FORCE_RECONVERT"] = "true"
 
     try:
         orchestrator = Orchestrator(output_dir=output)
