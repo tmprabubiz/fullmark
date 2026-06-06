@@ -32,7 +32,7 @@ easyocr>=1.7.1
 
 # --- Video Agent ---
 openai-whisper>=20231117
-PySceneDetect>=0.6.3
+scenedetect>=0.6.3
 opencv-python>=4.9.0
 
 # --- Compiler Agent / Model Client ---
