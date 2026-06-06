@@ -100,9 +100,10 @@ class MetadataLogger:
     def already_converted(self, source: str) -> Optional[dict]:
         """
         Return the most recent log entry for *source* if it has been converted
-        in a previous run, or ``None`` if not found.
+        in a previous run **and all its output files still exist** on disk.
 
-        Uses content hash — so the same file with different names is detected.
+        If the output files have been deleted the entry is ignored — FullMark
+        will reconvert without the user needing to use ``--force``.
 
         Args:
             source: Source path or URL to look up.
@@ -113,7 +114,58 @@ class MetadataLogger:
         content_hash = self._compute_hash(source)
         matches = [e for e in self._entries if e.get("content_hash") == content_hash
                    or e.get("source_id") == "fm-" + content_hash]
-        return matches[-1] if matches else None
+        if not matches:
+            return None
+        entry = matches[-1]
+        # Verify at least one output file still exists; if all are gone, treat
+        # as unconverted so the user doesn't need --force after deleting output.
+        output_files = entry.get("output_files", [])
+        if output_files and not any(Path(p).exists() for p in output_files):
+            logger.debug(
+                "Log entry for %s found but output files are missing — will reconvert", source
+            )
+            return None
+        return entry
+
+    def write_skip_notice(self, source: str, entry: dict) -> None:
+        """
+        Append a human-readable skip notice to ``conversion_skipped.log``.
+
+        Called by the orchestrator whenever a source is skipped because a
+        previous conversion is still on disk.  The notice tells the user:
+        - what was skipped
+        - when it was previously converted
+        - where the existing output files are
+        - how to force a re-conversion
+
+        Args:
+            source: The source that was skipped.
+            entry:  The matching log entry returned by ``already_converted()``.
+        """
+        skip_log = self.output_dir / "conversion_skipped.log"
+        now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        converted_at = entry.get("converted", "unknown")[:19].replace("T", " ") + " UTC"
+        source_id = entry.get("source_id", entry.get("content_hash", "?"))
+        output_files = entry.get("output_files", [])
+        files_block = "\n".join(f"    {p}" for p in output_files) or "    (none recorded)"
+
+        lines = [
+            f"[{now}] SKIPPED — already converted",
+            f"  Source    : {source}",
+            f"  ID        : {source_id}",
+            f"  Converted : {converted_at}",
+            f"  Output    :",
+            files_block,
+            f"  To reconvert : fullmark_cli.py {source} --force",
+            f"  To delete & redo: delete the output file(s) above, then run again",
+            "",
+        ]
+        try:
+            skip_log.parent.mkdir(parents=True, exist_ok=True)
+            with skip_log.open("a", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except Exception as exc:
+            logger.debug("Could not write skip log: %s", exc)
 
     def write_summary(self) -> Path:
         """

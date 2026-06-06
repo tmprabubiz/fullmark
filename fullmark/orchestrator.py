@@ -309,11 +309,22 @@ class Orchestrator:
         return chunks or [text]
 
     def _should_skip(self, source: str) -> bool:
-        """Return True if *source* is already logged, unless FORCE_RECONVERT is set."""
+        """Return True if *source* is already logged and output files exist,
+        unless FORCE_RECONVERT is set.  Emits a skip notice to
+        conversion_skipped.log so the user always knows what was skipped,
+        when it was done, and where to find the existing output.
+        """
         if os.getenv("FORCE_RECONVERT", "").lower() in ("1", "true", "yes"):
             return False
-        if self._meta_log.already_converted(source):
-            logger.info("Skipping already-converted source: %s", source)
+        entry = self._meta_log.already_converted(source)
+        if entry:
+            logger.info(
+                "Skipping already-converted source: %s  (id: %s, converted: %s)",
+                source,
+                entry.get("source_id", "?"),
+                entry.get("converted", "?")[:19],
+            )
+            self._meta_log.write_skip_notice(source, entry)
             return True
         return False
 
