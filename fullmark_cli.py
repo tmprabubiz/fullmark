@@ -38,9 +38,18 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+import re as _re
+
+_GITHUB_REPO_RE = _re.compile(
+    r"^https://github\.com/[^/]+/[^/]+"
+    r"(?:/tree/[^/]+(?:/.*)?)?$",
+    _re.IGNORECASE,
+)
+
+
 def _is_github_url(url: str) -> bool:
-    """Return True if url is a GitHub repo URL (routes to RepoAgent, not crawlable)."""
-    return "github.com/" in url
+    """Return True only for GitHub repo/tree URLs (handled by RepoAgent, not crawlable)."""
+    return bool(_GITHUB_REPO_RE.match(url))
 
 
 def _prompt_follow_links(
@@ -74,6 +83,7 @@ def _prompt_follow_links(
         from fullmark.utils.crawler import LinkCrawler
 
         resp = requests.get(source, timeout=10, headers={"User-Agent": "FullMark/1.0"})
+        resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
         domain = urlparse(source).netloc
         links = {

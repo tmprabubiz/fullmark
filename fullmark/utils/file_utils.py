@@ -201,7 +201,10 @@ def detect_agent(source: str | Path) -> str:
     return "unknown"
 
 
-def extract_urls_from_file(path: Path) -> tuple[list[str], list[str]]:
+def extract_urls_from_file(
+    path: Path,
+    stop_after: int | None = None,
+) -> tuple[list[str], list[str]]:
     """
     Extract HTTP/HTTPS URLs from a .txt, .docx/.doc, or spreadsheet file.
 
@@ -210,6 +213,8 @@ def extract_urls_from_file(path: Path) -> tuple[list[str], list[str]]:
 
     Args:
         path: Path to the URL-list file.
+        stop_after: If set, stop parsing as soon as this many URLs have been
+            found.  Useful for quick existence checks (pass ``stop_after=1``).
 
     Returns:
         Tuple of (urls, skipped_lines).
@@ -270,6 +275,8 @@ def extract_urls_from_file(path: Path) -> tuple[list[str], list[str]]:
             continue
         if _URL_RE.match(stripped):
             urls.append(stripped)
+            if stop_after is not None and len(urls) >= stop_after:
+                break
         else:
             skipped.append(stripped)
 
@@ -287,7 +294,8 @@ def is_url_list_file(path: Path) -> bool:
     if path.suffix.lower() not in URL_LIST_EXTENSIONS:
         return False
     try:
-        urls, _ = extract_urls_from_file(path)
+        # stop_after=1 avoids reading the entire DOCX/XLSX just for detection
+        urls, _ = extract_urls_from_file(path, stop_after=1)
         return len(urls) > 0
     except Exception:
         return False

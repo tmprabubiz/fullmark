@@ -226,6 +226,10 @@ class Orchestrator:
         stem = base_path.stem
         chunks = self._split_markdown(markdown)
 
+        # Guard: _split_markdown returns [text] for empty input, but be explicit.
+        if not chunks:
+            chunks = [markdown]
+
         # Compute stable source identity for front matter injection + footnote
         from fullmark.utils.metadata_logger import MetadataLogger as _ML
         from fullmark.utils.markdown_utils import inject_source_id, append_footnote
