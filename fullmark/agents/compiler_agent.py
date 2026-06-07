@@ -31,8 +31,10 @@ Your task:
 1. Merge the transcript and frame OCR into a single, clean, structured Markdown document.
 2. Use ## headings for each scene/section, labeled with the timestamp [MM:SS].
 3. Place the transcript text for each time window under its section.
-4. If OCR text from a frame matches the time window, include it as a blockquote.
-5. Remove filler words, false starts, and repetitions.
+4. For every frame that has non-empty ocr_text, you MUST include it verbatim in a
+   fenced code block (or as a blockquote if it is prose text) under the nearest
+   heading — do NOT summarise, skip, or paraphrase it.
+5. Remove filler words, false starts, and repetitions from the transcript only.
 6. Preserve technical terms, proper nouns, and code snippets exactly.
 7. Output ONLY the Markdown document — no preamble or explanation.
 """
@@ -165,6 +167,8 @@ class CompilerAgent:
                 if img:
                     parts.append(f"![frame {mins:02d}:{secs:02d}]({Path(img).name})")
                 if ocr:
-                    parts.append(f"> {clean_text(ocr)}")
+                    parts.append(f"\n```\n{clean_text(ocr)}\n```")
+                else:
+                    parts.append("*(no OCR text detected in this frame)*")
 
         return "\n\n".join(parts)

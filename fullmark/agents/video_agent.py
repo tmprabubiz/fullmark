@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _AGENT_NAME  = "VideoAgent"
 _WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+_FRAME_INTERVAL = float(os.getenv("VIDEO_FRAME_INTERVAL", "10"))   # seconds between frames
 
 _AUDIO_EXTENSIONS = frozenset({".mp3", ".wav", ".m4a"})
 
@@ -202,7 +203,7 @@ class VideoAgent:
         return frames
 
     def _extract_frames_fixed_interval(self, video_path: Path, output_dir: Path,
-                                        interval_seconds: float = 30.0) -> list[FrameData]:
+                                        interval_seconds: float = _FRAME_INTERVAL) -> list[FrameData]:
         """Extract one frame every *interval_seconds* as fallback."""
         duration = self._get_duration(video_path)
         if duration <= 0:
@@ -250,9 +251,49 @@ class VideoAgent:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _ocr_frame(self, frame_path: Path) -> str:
-        from fullmark.agents.image_agent import ImageAgent
-        agent = ImageAgent()
+        """
+        OCR a video frame.
+
+        Video frames are typically low-resolution compressed JPEGs.
+        Upscaling to at least 1280px wide before OCR dramatically improves
+        tesseract accuracy on slide/screen-recording content.
+        Tries tesseract first, then easyocr as fallback.
+        """
         try:
-            return agent._ocr_tesseract(frame_path)
-        except Exception:
-            return ""
+            from PIL import Image  # type: ignore
+            from io import BytesIO
+
+            MIN_WIDTH = 1280
+            with Image.open(frame_path) as img:
+                img = img.convert("RGB")
+                w, h = img.size
+                if w < MIN_WIDTH:
+                    scale = MIN_WIDTH / w
+                    img = img.resize((MIN_WIDTH, int(h * scale)), Image.LANCZOS)
+                # Write upscaled copy to a temp file for OCR tools
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=90)
+                buf.seek(0)
+                upscaled = Image.open(buf)
+
+            import pytesseract  # type: ignore
+            text = pytesseract.image_to_string(upscaled).strip()
+            if text:
+                return text
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug("tesseract OCR failed on frame %s: %s", frame_path.name, exc)
+
+        # Fallback: easyocr
+        try:
+            import easyocr  # type: ignore
+            reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+            results = reader.readtext(str(frame_path), detail=0)
+            return " ".join(results)
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug("easyocr failed on frame %s: %s", frame_path.name, exc)
+
+        return ""
