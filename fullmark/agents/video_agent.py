@@ -254,15 +254,16 @@ class VideoAgent:
         """
         OCR a video frame.
 
-        Video frames are typically low-resolution compressed JPEGs.
-        Upscaling to at least 1280px wide before OCR dramatically improves
-        tesseract accuracy on slide/screen-recording content.
-        Tries tesseract first, then easyocr as fallback.
+        Upscales to >=1280px wide (LANCZOS) before running tesseract, then
+        easyocr as a secondary fallback.  If both return empty text the frame
+        is passed to the vision LLM chain (VISION_CHAIN in .env) as a last
+        resort — same chain used by ImageAgent for decorative images.
+        Set VISION_CHAIN= (empty) in .env to disable the vision fallback.
         """
+        # ── Upscale helper ────────────────────────────────────────────────
+        upscaled_path = frame_path
         try:
             from PIL import Image  # type: ignore
-            from io import BytesIO
-
             MIN_WIDTH = 1280
             with Image.open(frame_path) as img:
                 img = img.convert("RGB")
@@ -270,14 +271,17 @@ class VideoAgent:
                 if w < MIN_WIDTH:
                     scale = MIN_WIDTH / w
                     img = img.resize((MIN_WIDTH, int(h * scale)), Image.LANCZOS)
-                # Write upscaled copy to a temp file for OCR tools
-                buf = BytesIO()
-                img.save(buf, format="JPEG", quality=90)
-                buf.seek(0)
-                upscaled = Image.open(buf)
+                    upscaled_path = frame_path.with_suffix(".upscaled.jpg")
+                    img.save(upscaled_path, format="JPEG", quality=90)
+        except Exception as exc:
+            logger.debug("Upscale failed for %s: %s", frame_path.name, exc)
 
+        # ── Tesseract ─────────────────────────────────────────────────────
+        try:
             import pytesseract  # type: ignore
-            text = pytesseract.image_to_string(upscaled).strip()
+            from PIL import Image  # type: ignore
+            with Image.open(upscaled_path) as img:
+                text = pytesseract.image_to_string(img).strip()
             if text:
                 return text
         except ImportError:
@@ -285,15 +289,32 @@ class VideoAgent:
         except Exception as exc:
             logger.debug("tesseract OCR failed on frame %s: %s", frame_path.name, exc)
 
-        # Fallback: easyocr
+        # ── EasyOCR fallback ──────────────────────────────────────────────
         try:
             import easyocr  # type: ignore
             reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-            results = reader.readtext(str(frame_path), detail=0)
-            return " ".join(results)
+            results = reader.readtext(str(upscaled_path), detail=0)
+            text = " ".join(results).strip()
+            if text:
+                return text
         except ImportError:
             pass
         except Exception as exc:
             logger.debug("easyocr failed on frame %s: %s", frame_path.name, exc)
+
+        # ── Vision LLM last-resort fallback ───────────────────────────────
+        # Only used when both OCR tools return empty — e.g. very low-res video,
+        # hand-drawn diagrams, or decorative slides with no machine-readable text.
+        # Controlled by VISION_CHAIN in .env (set to empty to disable).
+        if os.getenv("VISION_CHAIN", "").strip():
+            try:
+                from fullmark.agents.image_agent import ImageAgent
+                text = ImageAgent()._describe_with_vision(upscaled_path)
+                if text:
+                    logger.debug("Vision LLM described frame %s (%d chars)",
+                                 frame_path.name, len(text))
+                    return text
+            except Exception as exc:
+                logger.debug("Vision LLM fallback failed for %s: %s", frame_path.name, exc)
 
         return ""

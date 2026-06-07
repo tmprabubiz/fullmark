@@ -22,7 +22,7 @@ engine, and writes the result with a stable identity so you never convert the sa
 | **Email** | MSG (Outlook), EML | Headers + body; HTML email → Markdown |
 | **Images** | JPG, PNG, BMP, TIFF, WebP | OCR text extraction (Tesseract → EasyOCR fallback); table images → GFM tables; decorative images embedded as base64 or described by vision LLM |
 | **SVG** | SVG | Shapes and paths parsed → Mermaid diagram code block; text elements as bullet list |
-| **Video** | MP4, AVI, MOV, MKV, WEBM | Audio extracted → Whisper transcription with timestamps; scenes detected → frame OCR; combined into structured Markdown by LLM |
+| **Video** | MP4, AVI, MOV, MKV, WEBM | Audio → Whisper transcription; frames extracted every 10s, upscaled, OCR'd (Tesseract → EasyOCR → vision LLM fallback); combined into structured Markdown |
 | **Audio** | MP3, WAV, M4A | Whisper transcription with `[MM:SS]` timestamps |
 | **Web** | HTTP/HTTPS URLs, HTML, RSS, YouTube | Page content + images → Markdown; SVG logos detected by content-type; YouTube transcripts; RSS entries as numbered list |
 | **Archives** | ZIP | Auto-unpacked; each file routed to the right agent individually |
@@ -219,6 +219,61 @@ Output structure:
 
 Whisper runs **locally** — no audio is sent to any cloud service.
 Set model size with `--whisper-model tiny|base|small|medium|large` (default: `base`).
+
+**Video frame OCR pipeline** (fully local, no API required):
+
+| Step | Tool | Notes |
+|---|---|---|
+| 1. Frame extraction | ffmpeg | Every `VIDEO_FRAME_INTERVAL` seconds (default: 10s) |
+| 2. Upscale | Pillow LANCZOS | Frames narrower than 1280px are upscaled before OCR |
+| 3. OCR primary | Tesseract | Best for text-heavy slides and screen recordings |
+| 4. OCR fallback | EasyOCR | Catches stylised fonts and graphics that Tesseract misses |
+| 5. Vision LLM fallback | VISION_CHAIN | **Only if both OCR tools return empty** — e.g. hand-drawn diagrams or decorative slides. Disabled by default. Enable by setting `VISION_CHAIN` in `.env`. |
+
+Tune extraction with `.env` settings:
+
+```dotenv
+VIDEO_FRAME_INTERVAL=10    # seconds between sampled frames (default: 10)
+WHISPER_MODEL=base         # tiny | base | small | medium | large
+```
+
+### Manual vision extraction tool (advanced / optional)
+
+For cases where the standard OCR pipeline is insufficient — such as very
+low-resolution videos that cannot be usefully upscaled, or videos consisting
+entirely of diagrams with no machine-readable text — a standalone script is
+included:
+
+```bash
+python video_vision_extractor.py "input/lecture.mp4"
+```
+
+This sends each unique frame to an **OpenAI vision model** (GPT-4o-mini by
+default) and writes a separate `_Video.md` file alongside the main transcript.
+It requires `OPENAI_API_KEY` in your `.env`.
+
+```dotenv
+OPENAI_API_KEY=sk-...
+OPENAI_VISION_MODEL=gpt-4o-mini   # or gpt-4o for higher accuracy
+```
+
+Key options:
+
+```bash
+# Skip PySceneDetect (much faster for long videos — uses fixed-interval only)
+python video_vision_extractor.py lecture.mp4 --skip-scene-detect
+
+# Adjust sampling density (lower = more frames)
+python video_vision_extractor.py lecture.mp4 --interval 10 --hash-threshold 10
+
+# Preview which frames would be sent without spending any API tokens
+python video_vision_extractor.py lecture.mp4 --dry-run --skip-scene-detect
+```
+
+> **Cost note:** GPT-4o-mini vision at `detail: high` costs roughly $0.001–$0.003
+> per frame. A 1-hour lecture at 10s intervals ≈ 300 unique frames ≈ $0.30–$0.90.
+> The standard OCR pipeline (Tesseract + EasyOCR) is completely free and should be
+> tried first — it handles most screen-recording and slide-deck videos well.
 
 ### Convert everything in a folder
 
