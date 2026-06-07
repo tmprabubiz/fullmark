@@ -621,9 +621,46 @@ python -m pytest tests/ -v
 
 147 tests, all mocked — no internet connection or external tools required.
 
----
+### Test Coverage Gaps (pending)
 
-## Project Structure
+The unit suite mocks all I/O. The following test cases are not yet written and should be added before a production release:
+
+**Security (from Opus 4.8 review)**
+- ZIP traversal: member `../../evil.txt` must not escape `temp_dir`
+- YAML front matter: source values containing `#`, `:`, or `"` produce valid YAML
+
+**Output naming**
+- Two sources with the same filename stem → two distinct output paths (hash suffix)
+- Summary links for subfolder outputs are relative, not bare filenames
+
+**CLI / routing**
+- `https://github.com/a/b` → RepoAgent (not crawlable)
+- `https://github.com/a/b/issues/1` → WebAgent (crawlable)
+- `https://github.com/a/b/blob/main/f.py` → WebAgent (crawlable)
+
+**Video OCR pipeline**
+- Frame is upscaled to ≥1280px before Tesseract runs
+- EasyOCR is not instantiated when Tesseract returns text
+- Vision LLM fallback is gated on `VISION_CHAIN` env var
+
+### Manual Integration Tests
+
+These require real files or network and cannot be mocked:
+
+| # | Input | What to verify |
+|---|---|---|
+| 1 | PDF with text | Output contains paragraph text, not just front matter |
+| 2 | Scanned (image) PDF | pytesseract OCR fallback produces text |
+| 3 | XLSX | GFM table output |
+| 4 | HTTP URL | Images download, HTML → clean Markdown |
+| 5 | YouTube URL | Transcript with `[MM:SS]` timestamps |
+| 6 | Short MP4 (< 5 min) | Whisper transcript + at least some OCR frame text |
+| 7 | ZIP with mixed files | Each file routes to correct agent, all outputs collected |
+| 8 | Crafted ZIP (traversal) | `../../test.txt` member extracts safely, not outside temp dir |
+| 9 | Two files with same name from different dirs | Both saved, no silent overwrite |
+| 10 | GitHub repo URL | RepoAgent runs, not WebAgent |
+
+
 
 ```
 fullmark/
