@@ -175,36 +175,127 @@ class VideoAgent:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _extract_frames(self, video_path: Path, output_dir: Path) -> list[FrameData]:
-        """Detect scene changes and extract one frame per scene."""
+        """
+        Extract frames where slide/screen content changed, ignoring head motion.
+
+        Primary strategy: sample every VIDEO_FRAME_INTERVAL seconds, crop out the
+        likely webcam overlay region (top 20 % of height), run tesseract on the
+        remaining content area, and keep the frame only when the OCR text differs
+        meaningfully from the previous kept frame.  This makes human head movement
+        invisible to the change detector while still catching every new slide.
+
+        Fallback chain (if tesseract is not importable):
+          1. PySceneDetect ContentDetector
+          2. Fixed-interval sampling
+        """
+        frames = self._extract_frames_ocr_diff(video_path, output_dir)
+        if frames is not None:          # tesseract was available
+            return frames
+
+        # ── PySceneDetect fallback ────────────────────────────────────────
         try:
             from scenedetect import open_video, SceneManager  # type: ignore
             from scenedetect.detectors import ContentDetector  # type: ignore
-        except ImportError:
-            logger.warning("PySceneDetect not installed — falling back to fixed-interval frames")
-            return self._extract_frames_fixed_interval(video_path, output_dir)
-
-        try:
             video = open_video(str(video_path))
             manager = SceneManager()
             manager.add_detector(ContentDetector(threshold=27.0))
             manager.detect_scenes(video, show_progress=False)
             scene_list = manager.get_scene_list()
+            result: list[FrameData] = []
+            for i, (start_time, _) in enumerate(scene_list, 1):
+                ts = start_time.get_seconds()
+                frame_path = output_dir / f"frame-{i:03d}.jpg"
+                if self._extract_frame_at(video_path, ts, frame_path):
+                    result.append(FrameData(timestamp=ts, path=frame_path))
+            if result:
+                return result
         except Exception as exc:
-            logger.warning("Scene detection failed: %s — using fixed interval", exc)
-            return self._extract_frames_fixed_interval(video_path, output_dir)
+            logger.warning("PySceneDetect unavailable or failed: %s — using fixed interval", exc)
+
+        # ── Fixed-interval final fallback ─────────────────────────────────
+        return self._extract_frames_fixed_interval(video_path, output_dir)
+
+    def _extract_frames_ocr_diff(
+        self, video_path: Path, output_dir: Path
+    ) -> list[FrameData] | None:
+        """
+        Sample frames at VIDEO_FRAME_INTERVAL seconds.  For each frame, crop out
+        the top 20 % of height (typical webcam/head overlay) and run tesseract on
+        the remaining content region.  Only frames whose OCR text changed
+        significantly compared to the previous kept frame are retained.
+
+        Returns a list of FrameData, or None if tesseract is not importable (so
+        the caller can try the next strategy).
+        """
+        try:
+            import pytesseract  # type: ignore
+            from PIL import Image  # type: ignore
+        except ImportError:
+            return None
+
+        duration = self._get_duration(video_path)
+        if duration <= 0:
+            return []
 
         frames: list[FrameData] = []
-        for i, (start_time, _) in enumerate(scene_list, 1):
-            timestamp = start_time.get_seconds()
-            frame_path = output_dir / f"frame-{i:03d}.jpg"
-            if self._extract_frame_at(video_path, timestamp, frame_path):
-                frames.append(FrameData(timestamp=timestamp, path=frame_path))
+        prev_ocr: str = ""
+        t = 0.0
+        i = 1
 
+        while t < duration:
+            frame_path = output_dir / f"frame-{i:03d}.jpg"
+            if self._extract_frame_at(video_path, t, frame_path):
+                try:
+                    with Image.open(frame_path) as img:
+                        img = img.convert("RGB")
+                        w, h = img.size
+                        # Exclude top 20 % — webcam overlay is almost always in a
+                        # top corner (top-left or top-right).
+                        content_box = (0, int(h * 0.20), w, h)
+                        cropped = img.crop(content_box)
+                    curr_ocr = pytesseract.image_to_string(cropped).strip()
+                    if self._ocr_changed(prev_ocr, curr_ocr):
+                        frames.append(FrameData(timestamp=t, path=frame_path))
+                        prev_ocr = curr_ocr
+                    else:
+                        # Discard duplicate frame to save disk space
+                        try:
+                            frame_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    logger.debug("OCR diff check failed at t=%.1fs: %s", t, exc)
+                    # Keep frame when we cannot judge — better to over-capture
+                    frames.append(FrameData(timestamp=t, path=frame_path))
+
+            t += _FRAME_INTERVAL
+            i += 1
+
+        logger.info("OCR-diff frame extraction: %d frames kept from %.0fs video", len(frames), duration)
         return frames
+
+    @staticmethod
+    def _ocr_changed(prev: str, curr: str, threshold: float = 0.70) -> bool:
+        """
+        Return True when the OCR text changed enough to indicate a new slide.
+
+        Uses word-level Jaccard similarity.  A similarity below *threshold*
+        (default 70 %) is considered a meaningful visual change.
+        """
+        if not prev:
+            return bool(curr.strip())   # first frame that has any text is a change
+        if not curr.strip():
+            return False                # blank frame — not a useful new slide
+        prev_words = set(prev.lower().split())
+        curr_words = set(curr.lower().split())
+        if not prev_words:
+            return bool(curr_words)
+        similarity = len(prev_words & curr_words) / len(prev_words | curr_words)
+        return similarity < threshold
 
     def _extract_frames_fixed_interval(self, video_path: Path, output_dir: Path,
                                         interval_seconds: float = _FRAME_INTERVAL) -> list[FrameData]:
-        """Extract one frame every *interval_seconds* as fallback."""
+        """Extract one frame every *interval_seconds* as final fallback."""
         duration = self._get_duration(video_path)
         if duration <= 0:
             return []
