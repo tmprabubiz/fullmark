@@ -311,11 +311,13 @@ def unpack_zip(zip_path: Path) -> tuple[Path, list[Path]]:
         for member in zf.infolist():
             if member.is_dir():
                 continue
-            # Security: strip path traversal components
+            # Security: strip ALL path components — only use the bare filename.
+            # member.filename can contain "../" traversal sequences; using it
+            # directly as a dest path would let a crafted ZIP escape temp_dir.
             safe_name = Path(member.filename).name
             if not safe_name:
                 continue
-            dest = temp_dir / member.filename
+            dest = temp_dir / safe_name
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(member))
             extracted.append(dest)
@@ -384,6 +386,10 @@ def safe_output_path(source: str | Path, output_dir: Path, suffix: str = ".md") 
 
     For file paths uses the stem of the filename.
 
+    If the computed path already exists (collision from a different source with
+    the same stem), a short 6-character hash of the full source path is
+    appended to disambiguate without overwriting the previous output.
+
     Args:
         source: Original source path or URL.
         output_dir: Directory to write output into.
@@ -392,6 +398,8 @@ def safe_output_path(source: str | Path, output_dir: Path, suffix: str = ".md") 
     Returns:
         Resolved output Path.
     """
+    import hashlib as _hashlib
+
     source_str = str(source)
     if source_str.startswith(("http://", "https://")):
         stem = url_to_output_name(source_str)
@@ -400,4 +408,10 @@ def safe_output_path(source: str | Path, output_dir: Path, suffix: str = ".md") 
         # Sanitise: keep alphanumeric, dash, underscore
         stem = re.sub(r"[^\w-]", "_", stem).strip("_") or "output"
 
-    return output_dir / (stem + suffix)
+    candidate = output_dir / (stem + suffix)
+    if candidate.exists():
+        # Append a short hash so a different source with the same stem does not
+        # silently overwrite an existing output file.
+        short_hash = _hashlib.sha1(source_str.encode()).hexdigest()[:6]
+        candidate = output_dir / (stem + "_" + short_hash + suffix)
+    return candidate

@@ -219,7 +219,14 @@ class MetadataLogger:
                 f_path = Path(f_str)
                 seg_count = e.get("segments", 1)
                 segs_note = f" *(segment {seg_count} of {seg_count})*" if seg_count > 1 else ""
-                lines.append(f"- [{f_path.name}]({f_path.name}){segs_note}")
+                # Use a path relative to the summary file (output_dir) so links
+                # work correctly for files in sub-directories.
+                try:
+                    rel = f_path.relative_to(self.output_dir)
+                    link_target = rel.as_posix()
+                except ValueError:
+                    link_target = f_path.name
+                lines.append(f"- [{f_path.name}]({link_target}){segs_note}")
 
         if self._entries:
             lines.extend([

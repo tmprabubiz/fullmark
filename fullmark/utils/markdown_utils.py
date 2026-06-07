@@ -12,6 +12,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def _yaml_scalar(value: object) -> str:
+    """Return a safely quoted YAML scalar string.
+
+    Wraps in double-quotes and escapes backslashes, double-quotes, and
+    control characters so that paths, URLs, and arbitrary strings cannot
+    break the front matter block.
+    """
+    s = str(value)
+    s = s.replace("\\", "\\\\").replace('"', '\\"')
+    # Wrap in quotes unconditionally — always safe
+    return f'"{s}"'
+
+
 def front_matter(source: str, agent: str, extra: dict | None = None) -> str:
     """
     Generate YAML front matter for a converted Markdown file.
@@ -27,14 +40,13 @@ def front_matter(source: str, agent: str, extra: dict | None = None) -> str:
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         "---",
-        f"source: {source}",
+        f"source: {_yaml_scalar(source)}",
         f"converted: {now}",
-        f"agent: {agent}",
+        f"agent: {_yaml_scalar(agent)}",
     ]
     if extra:
         for k, v in extra.items():
-            # Simple scalar serialisation — no multi-line values
-            lines.append(f"{k}: {v}")
+            lines.append(f"{k}: {_yaml_scalar(v)}")
     lines.append("---")
     return "\n".join(lines)
 
