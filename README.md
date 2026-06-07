@@ -220,6 +220,14 @@ Output structure:
 Whisper runs **locally** — no audio is sent to any cloud service.
 Set model size with `--whisper-model tiny|base|small|medium|large` (default: `base`).
 
+> **GPU acceleration (NVIDIA):** The default `pip install -r requirements.txt` installs CPU-only PyTorch.
+> If you have an NVIDIA GPU, install the CUDA build for significantly faster Whisper transcription and EasyOCR:
+> ```bash
+> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+> ```
+> Replace `cu121` with your CUDA version (`cu118`, `cu124`, etc. — check with `nvidia-smi`).
+> Without this, Whisper and EasyOCR log informational messages about running in CPU/FP32 mode — these are not errors.
+
 **Video frame OCR pipeline** (fully local, no API required):
 
 | Step | Tool | Notes |
@@ -534,18 +542,28 @@ FullMark uses an LLM to structure video/audio transcripts and describe decorativ
 ### Provider chain in `.env`
 
 ```dotenv
-# Try left-to-right; first to respond wins
-COMPILER_CHAIN=openrouter_free,groq,cerebras,gemini,ollama
-VISION_CHAIN=gemini,openai,anthropic,openrouter_free,ollama
+# Try left-to-right; first to respond wins.
+# Put your most reliable/preferred provider first.
+# Recommended default (Gemini free tier is fast and generous):
+COMPILER_CHAIN=gemini,groq,openrouter_free,ollama
+
+# VISION_CHAIN: used only when Tesseract + EasyOCR both return empty on a frame.
+# Put your preferred vision provider first — order is fully user-configurable.
+# OpenAI (gpt-4o-mini) is a reliable, low-cost vision option:
+VISION_CHAIN=openai,gemini,gemini_free,anthropic,openrouter_free
 ```
+
+> **Important:** If `.env` contains more than one active `COMPILER_CHAIN=` or `VISION_CHAIN=` line,
+> python-dotenv silently uses only the **first** one. FullMark will log a warning at startup if
+> duplicates are detected so this is never invisible.
 
 ### Provider tiers
 
 | Tier | Providers | Cost |
 |---|---|---|
-| **Free APIs** | OpenRouter (free models), Groq, Cerebras, NVIDIA, Gemini free, Mistral free | Free |
-| **Low-cost** | DeepSeek, Together AI, Fireworks, Cohere | Pay-per-use, cheap |
-| **Premium** | OpenAI, Anthropic, Gemini Pro | Pay-per-use |
+| **Free APIs** | Gemini free, Groq, Cerebras, NVIDIA, OpenRouter (free models), Mistral free | Free |
+| **Low-cost** | OpenAI (gpt-4o-mini), DeepSeek, Together AI, Fireworks, Cohere | Pay-per-use, cheap |
+| **Premium** | OpenAI (gpt-4o), Anthropic, Gemini Pro | Pay-per-use |
 | **Local / offline** | Ollama (any model you've pulled) | Free |
 
 ```dotenv

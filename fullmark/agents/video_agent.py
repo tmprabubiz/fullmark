@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -129,12 +130,37 @@ class VideoAgent:
             logger.warning("openai-whisper not installed — no transcription")
             return []
 
-        try:
-            model = whisper.load_model(
-                _WHISPER_MODEL,
-                download_root=os.getenv("WHISPER_CACHE_DIR") or None,
+        # Suppress the FP16-on-CPU UserWarning emitted by Whisper when PyTorch
+        # has no CUDA device.  Whisper handles this internally by switching to
+        # FP32 automatically — the warning is noise for end users.
+        # To use the GPU and eliminate this entirely, install CUDA PyTorch:
+        #   pip install torch --index-url https://download.pytorch.org/whl/cu121
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
+            try:
+                model = whisper.load_model(
+                    _WHISPER_MODEL,
+                    download_root=os.getenv("WHISPER_CACHE_DIR") or None,
+                )
+            except Exception as exc:
+                logger.error("Whisper model load failed: %s", exc)
+                return []
+
+        # Log a single clean info line if running on CPU so users know
+        device = str(getattr(model, "device", "cpu"))
+        if device.startswith("cpu"):
+            logger.info(
+                "Whisper: running on CPU (FP32 mode). "
+                "Install CUDA PyTorch for GPU acceleration: "
+                "pip install torch --index-url https://download.pytorch.org/whl/cu121"
             )
-            result = model.transcribe(str(audio_path), word_timestamps=False)
+        else:
+            logger.info("Whisper: running on %s", device)
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
+                result = model.transcribe(str(audio_path), word_timestamps=False)
         except Exception as exc:
             logger.error("Whisper transcription failed: %s", exc)
             return []
@@ -381,10 +407,19 @@ class VideoAgent:
             logger.debug("tesseract OCR failed on frame %s: %s", frame_path.name, exc)
 
         # ── EasyOCR fallback ──────────────────────────────────────────────
+        # Suppress PyTorch's pin_memory warning that fires on CPU-only builds
+        # when EasyOCR initialises its DataLoader. Harmless — PyTorch simply
+        # doesn't pin memory on CPU. Install CUDA PyTorch to eliminate it fully.
         try:
             import easyocr  # type: ignore
-            reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-            results = reader.readtext(str(upscaled_path), detail=0)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*pin_memory.*no accelerator.*",
+                    category=UserWarning,
+                )
+                reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+                results = reader.readtext(str(upscaled_path), detail=0)
             text = " ".join(results).strip()
             if text:
                 return text

@@ -72,6 +72,7 @@ class ModelClient:
     """
 
     def __init__(self) -> None:
+        self._warn_duplicate_env_keys()
         chain_env = os.getenv("COMPILER_CHAIN", "")
         if chain_env:
             self._chain = [p.strip().lower() for p in chain_env.split(",") if p.strip()]
@@ -88,6 +89,32 @@ class ModelClient:
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _warn_duplicate_env_keys() -> None:
+        """
+        Warn if .env contains multiple active (non-commented) COMPILER_CHAIN or
+        VISION_CHAIN assignments.  python-dotenv silently uses the FIRST value,
+        so duplicates cause the wrong chain to run with no error message.
+        """
+        env_path = os.path.join(os.getcwd(), ".env")
+        if not os.path.exists(env_path):
+            return
+        try:
+            with open(env_path, encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return
+        for key in ("COMPILER_CHAIN", "VISION_CHAIN"):
+            active = [l.strip() for l in lines
+                      if l.strip().startswith(f"{key}=") and not l.strip().startswith("#")]
+            if len(active) > 1:
+                logger.warning(
+                    ".env contains %d active '%s=' lines — python-dotenv uses only the FIRST. "
+                    "Remove the duplicates to avoid using the wrong provider chain. "
+                    "Active lines found: %s",
+                    len(active), key, active,
+                )
 
     def complete(self, prompt: str, system: str | None = None) -> Optional[str]:
         """
