@@ -22,7 +22,7 @@ engine, and writes the result with a stable identity so you never convert the sa
 | **Email** | MSG (Outlook), EML | Headers + body; HTML email → Markdown |
 | **Images** | JPG, PNG, BMP, TIFF, WebP | OCR text extraction (Tesseract → EasyOCR fallback); table images → GFM tables; decorative images embedded as base64 or described by vision LLM |
 | **SVG** | SVG | Shapes and paths parsed → Mermaid diagram code block; text elements as bullet list |
-| **Video** | MP4, AVI, MOV, MKV, WEBM | Audio → Whisper transcription; frames extracted every 10s, upscaled, OCR'd (Tesseract → EasyOCR → vision LLM fallback); combined into structured Markdown |
+| **Video** | MP4, AVI, MOV, MKV, WEBM | Audio → Whisper transcription with timecodes; frames sampled every 10 s, head overlay cropped, Tesseract OCR-diff detects slide changes (ignores head movement), upscaled and OCR'd (Tesseract → EasyOCR → vision LLM fallback); transcript and slide content interleaved chronologically |
 | **Audio** | MP3, WAV, M4A | Whisper transcription with `[MM:SS]` timestamps |
 | **Web** | HTTP/HTTPS URLs, HTML, RSS, YouTube | Page content + images → Markdown; SVG logos detected by content-type; YouTube transcripts; RSS entries as numbered list |
 | **Archives** | ZIP | Auto-unpacked; each file routed to the right agent individually |
@@ -224,11 +224,21 @@ Set model size with `--whisper-model tiny|base|small|medium|large` (default: `ba
 
 | Step | Tool | Notes |
 |---|---|---|
-| 1. Frame extraction | ffmpeg | Every `VIDEO_FRAME_INTERVAL` seconds (default: 10s) |
-| 2. Upscale | Pillow LANCZOS | Frames narrower than 1280px are upscaled before OCR |
-| 3. OCR primary | Tesseract | Best for text-heavy slides and screen recordings |
-| 4. OCR fallback | EasyOCR | Catches stylised fonts and graphics that Tesseract misses |
-| 5. Vision LLM fallback | VISION_CHAIN | **Only if both OCR tools return empty** — e.g. hand-drawn diagrams or decorative slides. Disabled by default. Enable by setting `VISION_CHAIN` in `.env`. |
+| 1. Sample frames | ffmpeg | Every `VIDEO_FRAME_INTERVAL` seconds (default: 10 s) |
+| 2. Crop head overlay | Pillow | Top 20 % of each frame is removed before comparison — ignores webcam/head movement |
+| 3. Slide-change detection | Tesseract + Jaccard similarity | OCR the content region; keep frame only when slide text changed ≥ 30 % from previous kept frame |
+| 4. Upscale for final OCR | Pillow LANCZOS | Kept frames narrower than 1280 px are upscaled before final OCR pass |
+| 5. OCR primary | Tesseract | Best for text-heavy slides and screen recordings |
+| 6. OCR fallback | EasyOCR | Catches stylised fonts and graphics that Tesseract misses |
+| 7. Vision LLM fallback | VISION_CHAIN | **Only if both OCR tools return empty** — e.g. hand-drawn diagrams or decorative slides. Disabled by default. Enable by setting `VISION_CHAIN` in `.env`. |
+
+The **Tesseract-first change detection** (steps 2–3) means:
+- Human head movement is invisible to the frame selector
+- A new slide triggers a capture even if it appears after only 10 s
+- Duplicate frames are discarded immediately to save disk space
+- If Tesseract is not installed, FullMark falls back to PySceneDetect, then fixed-interval sampling
+
+The final output interleaves audio transcript and frame OCR **chronologically by timecode**. Each `## [MM:SS]` section shows the slide OCR content followed by the speech that occurred while that slide was visible. Whisper segments are never split mid-sentence.
 
 Tune extraction with `.env` settings:
 
