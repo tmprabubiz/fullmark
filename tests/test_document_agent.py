@@ -50,7 +50,7 @@ class TestTxt:
         f.write_text("Some notes.", encoding="utf-8")
         result = _agent().convert(f)
         assert "---" in result
-        assert "agent: DocumentAgent" in result
+        assert 'agent: "DocumentAgent"' in result
 
     def test_convert_txt_preserves_content(self, tmp_path):
         f = tmp_path / "data.txt"
@@ -75,7 +75,7 @@ class TestCsv:
         f = tmp_path / "table.csv"
         f.write_text("A,B\n1,2", encoding="utf-8")
         result = _agent().convert(f)
-        assert "source: table.csv" in result
+        assert 'source: "table.csv"' in result
 
     def test_convert_empty_csv(self, tmp_path):
         f = tmp_path / "empty.csv"
@@ -122,7 +122,7 @@ class TestIpynb:
     def test_convert_ipynb_has_front_matter(self, tmp_path):
         f = self._make_notebook(tmp_path)
         result = _agent().convert(f)
-        assert "agent: DocumentAgent" in result
+        assert 'agent: "DocumentAgent"' in result
 
     def test_convert_ipynb_preserves_markdown_cells(self, tmp_path):
         f = self._make_notebook(tmp_path)
@@ -189,7 +189,7 @@ class TestDocx:
 
         assert "# Introduction" in result
         assert "Body text here." in result
-        assert "agent: DocumentAgent" in result
+        assert 'agent: "DocumentAgent"' in result
 
 
 # ──────────────────────────────────────────────────────────────────────────────

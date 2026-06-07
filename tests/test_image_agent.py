@@ -38,7 +38,7 @@ class TestRaster:
         agent = _agent()
         with patch.object(agent, "_ocr_tesseract", return_value="text"):
             result = agent.convert(f)
-        assert "agent: ImageAgent" in result
+        assert 'agent: "ImageAgent"' in result
         assert "---" in result
 
     def test_ocr_text_in_output(self, tmp_path):
@@ -121,7 +121,7 @@ class TestSvg:
         f = tmp_path / "flow.svg"
         f.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
         result = _agent().convert(f)
-        assert "agent: ImageAgent" in result
+        assert 'agent: "ImageAgent"' in result
 
     def test_convert_svg_generates_mermaid(self, tmp_path):
         svg_content = """<svg xmlns="http://www.w3.org/2000/svg">

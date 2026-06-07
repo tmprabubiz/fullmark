@@ -33,7 +33,7 @@ class TestLocalHtml:
         f = tmp_path / "index.html"
         f.write_text("<html><body>Content</body></html>", encoding="utf-8")
         result = _agent().convert(f)
-        assert "agent: WebAgent" in result
+        assert 'agent: "WebAgent"' in result
         assert "---" in result
 
     def test_convert_local_html_extracts_headings(self, tmp_path):
@@ -69,7 +69,7 @@ class TestUrlFetch:
         html = "<html><body><p>Content</p></body></html>"
         with patch("fullmark.agents.web_agent.WebAgent._fetch_url", return_value=html):
             result = _agent().convert("https://example.com/article")
-        assert "agent: WebAgent" in result
+        assert 'agent: "WebAgent"' in result
 
     def test_fetch_error_raises_agent_error(self):
         with patch("fullmark.agents.web_agent.WebAgent._fetch_url",
@@ -201,4 +201,4 @@ class TestUrlListAgent:
         with patch("requests.get", return_value=mock_resp):
             result = UrlListAgent().convert(f)
         assert "---" in result
-        assert "agent: UrlListAgent" in result
+        assert 'agent: "UrlListAgent"' in result

@@ -112,8 +112,8 @@ class TestVideoProcessing:
              patch.object(agent, "_process_video", return_value=([], [])):
             result = agent.convert(f)
 
-        assert "source: demo.mp4" in result
-        assert "agent: VideoAgent" in result
+        assert 'source: "demo.mp4"' in result
+        assert 'agent: "VideoAgent"' in result
 
 
 # ──────────────────────────────────────────────────────────────────────────────
