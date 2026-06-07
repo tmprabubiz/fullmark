@@ -73,6 +73,10 @@ class ModelClient:
 
     def __init__(self) -> None:
         self._warn_duplicate_env_keys()
+        # Session-level set of OpenRouter model IDs that permanently failed (404 / auth).
+        # Once a model is added here it is skipped for all subsequent chunks in this run,
+        # preventing the same dead model from being retried 94 times for a 94-chunk video.
+        self._dead_openrouter_models: set[str] = set()
         chain_env = os.getenv("COMPILER_CHAIN", "")
         if chain_env:
             self._chain = [p.strip().lower() for p in chain_env.split(",") if p.strip()]
@@ -428,11 +432,25 @@ class ModelClient:
             return None
 
     def _call_openrouter_free(self, client, messages: list[dict], primary_model: str) -> Optional[str]:
-        """Rotate through OPENROUTER_FREE_MODELS until one succeeds."""
+        """
+        Rotate through OPENROUTER_FREE_MODELS until one succeeds.
+
+        Models that return a permanent error (404, 401, invalid model) are added
+        to ``self._dead_openrouter_models`` and skipped for all subsequent calls
+        in this session — so a 94-chunk video never retries the same dead model
+        94 times.  Rate-limited models (429) are still attempted each time since
+        they may recover between chunks.
+        """
         free_models_str = os.getenv("OPENROUTER_FREE_MODELS", primary_model)
-        models = [m.strip() for m in free_models_str.split(",") if m.strip()]
-        if primary_model not in models:
-            models.insert(0, primary_model)
+        all_models = [m.strip() for m in free_models_str.split(",") if m.strip()]
+        if primary_model not in all_models:
+            all_models.insert(0, primary_model)
+
+        # Filter out models that permanently failed earlier in this session
+        models = [m for m in all_models if m not in self._dead_openrouter_models]
+        if not models:
+            logger.debug("All OpenRouter free models are dead this session — skipping provider")
+            return None
 
         for model in models:
             try:
@@ -443,7 +461,13 @@ class ModelClient:
                 )
                 return response.choices[0].message.content
             except Exception as exc:
-                logger.debug("OpenRouter free model %r failed: %s", model, exc)
+                exc_str = str(exc).lower()
+                is_permanent = any(kw in exc_str for kw in ("404", "not found", "401", "invalid model", "no endpoints"))
+                if is_permanent:
+                    self._dead_openrouter_models.add(model)
+                    logger.debug("OpenRouter model %r permanently dead — will skip for rest of session", model)
+                else:
+                    logger.debug("OpenRouter free model %r failed: %s", model, exc)
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
