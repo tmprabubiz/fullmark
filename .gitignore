@@ -238,6 +238,10 @@ AGENTS.md
 generate_session_log.py
 For-You_TMP*.md
 CLAUDE.md
+GitHub_Agent_Analysis.md
+ZZ_Validation_*.md
+video_vision_extractor.py
+Fullmark_Opus48/
 WORKFLOW.md
 SCRATCH.md
 SCRATCH*.md
